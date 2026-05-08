@@ -479,12 +479,91 @@ comparison:
   *WhatsApp's protocol is open (Signal Protocol); the client is not.
 
 
+adversaries, ranked by capability (and what each can do to you):
+
+  curious neighbor / random stranger
+    cannot read your messages, cannot see who you talk to, cannot
+    even tell you are using giz unless they look at your screen.
+
+  ISP / public wifi operator / corporate VPN
+    sees encrypted Tor traffic going to a guard relay. learns
+    nothing about content, contacts, or who is on the other end.
+
+  the company that makes the messenger
+    in giz: nobody. there is no giz server, no giz account
+    database, no giz operator with a subpoena address. nobody to
+    compel because there is no one in the loop.
+    in Signal: the Signal Foundation knows your phone number and
+    can see traffic timing.
+    in WhatsApp / iMessage: Meta / Apple know your phone number,
+    see traffic, and hold the keys to legally-mandated backdoors
+    in some jurisdictions.
+
+  one government acting alone, with full legal powers
+    can subpoena the local telco for browsing metadata. through
+    Tor they see "this user used Tor at this time" but not who
+    you talked to or what you said. cannot subpoena giz or Briar,
+    because there is no central operator. cannot subpoena your
+    contact list, because it lives only on your two devices.
+
+  one well-funded national intelligence service (NSA, FSB, MSS,
+  Mossad, GCHQ, etc.) targeting you specifically
+    can run Tor relays and try traffic-correlation attacks if you
+    are a high-value target. Briar's long-lived hidden services
+    + Tor's guard rotation make this expensive but not impossible.
+    expect months of targeted effort. you are still alive without
+    them reading your messages, but they may eventually map who
+    you talk to.
+
+  multiple cooperating intelligence services (Five Eyes, etc.)
+  with unlimited budget, focused on you by name, for years
+    they win. running enough Tor relays simultaneously makes
+    end-to-end traffic correlation feasible against a sustained
+    target. this is the documented upper limit of Tor itself,
+    not of giz. no commodity messenger - not Signal, not Briar,
+    not Session, not Cwtch - survives this case.
+    your defense at this level is operational, not technical:
+    change device, change network, change identity, communicate
+    less.
+
+  your phone / laptop has malware on it RIGHT NOW
+    they win instantly, regardless of which messenger you pick.
+    a screen recorder reads your chat. a keylogger reads your
+    password. the encryption is irrelevant. solve this first,
+    then worry about messengers.
+
+
+what giz is realistically good for:
+
+  - privacy from advertisers, ISPs, employers, schools, family
+    members, nosy roommates, vendor analytics teams.
+  - protection from one hostile state acting alone, as long as you
+    are not a sustained named target of theirs.
+  - keeping conversation evidence off your disk if your device is
+    seized while locked, or if you type the duress password.
+
+what giz is NOT for:
+
+  - hiding from a coalition of major intelligence services that
+    has you specifically in their crosshairs for years.
+  - communicating from a device you already suspect is hacked.
+  - long-term operational anonymity if you keep reusing the same
+    identity on the same network forever.
+
+
 bottom line:
+
+  giz + a clean device puts you above 99.9% of realistic adversaries.
+  the remaining 0.1% - multiple major intelligence agencies all
+  cooperating, targeting you by name, for years - cannot be defeated
+  by any messenger on the market today. their counter is not crypto;
+  it is operational discipline (different device, different network,
+  less communication, no reused identity).
 
   giz protects the wire and the disk. it cannot protect the device.
   if your laptop is clean, your messages are private from everyone
-  including Apple, your ISP, and the Briar project. if your laptop
-  is not clean, no messenger on earth can save you.
+  including Apple, your ISP, and the Briar project itself. if your
+  laptop is not clean, no messenger on earth can save you.
 """
 
 
