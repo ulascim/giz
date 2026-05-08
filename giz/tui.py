@@ -71,7 +71,9 @@ class TUI:
         if not self._contacts:
             self._console.print(
                 "\n[bold]first time? do this:[/bold]\n"
-                "  [cyan]/me[/cyan]            share your link with your friend\n"
+                "  [cyan]/me[/cyan]            print your link as text\n"
+                "  [cyan]/me qr[/cyan]         print your link as a QR\n"
+                "  [cyan]/me code[/cyan]       print your link as a 12-digit code\n"
                 "  [cyan]/add <link>[/cyan]    paste a link you received\n"
                 "  [cyan]/help[/cyan]          full command list\n"
             )
@@ -174,21 +176,25 @@ class TUI:
     def _print_help_brief(self) -> None:
         self._console.print(
             "[dim]/me  /add <link>  /list  /select <name>  /verify <name>  "
-            "/quit  /help[/dim]"
+            "/channels  /quit  /help[/dim]"
         )
 
     def _print_help_full(self) -> None:
         t = Table(title="commands", show_lines=False, box=None)
         t.add_column("command", style="cyan", no_wrap=True)
         t.add_column("does")
-        t.add_row("/me", "show your link (interactive channel picker)")
+        t.add_row("/me", "show your link as plain text")
+        t.add_row("/me qr", "show your link as a QR code")
+        t.add_row("/me code", "show your link as a 12-digit short-code")
+        t.add_row("/me all", "show all three formats at once")
         t.add_row("/add <link>", "add a contact from their briar:// link")
         t.add_row("/list", "list contacts")
         t.add_row("/select <name>", "switch active contact")
         t.add_row("/verify <name>", "show full fingerprint for out-of-band check")
+        t.add_row("/channels", "show the leak/MITM table for sharing channels")
         t.add_row("/status", "daemon + connection status")
         t.add_row("/history", "show message history with active contact")
-        t.add_row("/clear <name>", "delete message history with one contact (local only)")
+        t.add_row("/clear <name>", "delete message history (local only)")
         t.add_row("/del <name>", "delete a contact entirely")
         t.add_row("/help", "this list")
         t.add_row("/quit, /q", "exit cleanly")
@@ -234,7 +240,10 @@ class TUI:
             self._print_help_full()
             return True
         if cmd == "/me":
-            self._cmd_me()
+            self._cmd_me(rest)
+            return True
+        if cmd == "/channels":
+            handshake.render_channels_table(self._console)
             return True
         if cmd == "/add":
             self._cmd_add(rest)
@@ -263,21 +272,35 @@ class TUI:
         self._console.print(f"[yellow]unknown: {cmd}[/yellow] (try /help)")
         return True
 
-    def _cmd_me(self) -> None:
+    def _cmd_me(self, args: List[str]) -> None:
         try:
             link = self._client.my_link()
         except Exception as exc:
             self._console.print(f"[red]could not get link: {exc}[/red]")
             return
-        channel = handshake.pick_channel(self._console, direction=handshake.SEND)
-        handshake.render_for_channel(self._console, link, channel)
+        mode = (args[0].lower() if args else "text")
+        if mode == "qr":
+            handshake.render_qr(self._console, link)
+        elif mode in ("code", "digits", "short", "shortcode"):
+            handshake.render_code(self._console, link)
+        elif mode == "all":
+            handshake.render_all(self._console, link)
+        elif mode == "text":
+            handshake.render_text(self._console, link)
+        else:
+            self._console.print(
+                f"[yellow]unknown /me option: '{mode}'. "
+                f"valid: /me, /me qr, /me code, /me all[/yellow]"
+            )
+            return
         self._console.print(
-            "[dim]Tip: friend will run /add and paste the link they receive.[/dim]"
+            "[dim]send this to your friend; they will run /add <link>. "
+            "type /channels to see leak / MITM ranking of sharing methods.[/dim]"
         )
 
     def _cmd_add(self, args: List[str]) -> None:
         if not args:
-            self._console.print("[yellow]usage: /add <briar://...>[/yellow]")
+            self._console.print("[yellow]usage: /add <briar://...> [alias][/yellow]")
             return
         link = args[0]
         if not link.startswith("briar://"):
@@ -289,9 +312,6 @@ class TUI:
         if not alias:
             self._console.print("[yellow]aborted[/yellow]")
             return
-        receive_channel = handshake.pick_channel(
-            self._console, direction=handshake.RECEIVE
-        )
         try:
             self._client.add_pending(link, alias)
         except Exception as exc:
@@ -299,13 +319,11 @@ class TUI:
             return
         self._console.print(
             f"[green]pending contact '{alias}' added. "
-            f"handshake will complete when both sides are online.[/green]"
+            f"handshake will complete when both sides are online.[/green]\n"
+            f"[dim]if this link reached you via WhatsApp / iMessage / SMS, "
+            f"run /verify {alias} over a phone call once the handshake "
+            f"is done.[/dim]"
         )
-        if receive_channel.requires_verify:
-            self._console.print(
-                f"[yellow]'{receive_channel.label}' is a leaky channel. "
-                f"After handshake, run /verify {alias} over a phone call.[/yellow]"
-            )
 
     def _cmd_list(self) -> None:
         self._refresh_contacts()
