@@ -1,5 +1,5 @@
-/* giz - minimal terminal styling.
-   Three screens, all dark, cyan accents. No emoji, no surplus chrome. */
+/* giz - text-only TUI. No boxes, no borders, no highlight colors,
+   no padding gymnastics. Just lines of text. */
 
 Screen {
     background: $surface;
@@ -9,85 +9,79 @@ Screen {
 #title {
     dock: top;
     height: 1;
-    color: $accent;
-    background: $surface;
     padding: 0 1;
-    text-style: bold;
 }
 
 #hint {
     dock: bottom;
     height: 1;
-    color: $text-muted;
-    background: $surface;
     padding: 0 1;
+    color: $text-muted;
 }
 
 /* ---------------- ContactsScreen ---------------- */
 
 #empty {
     height: auto;
-    padding: 1 2;
-    color: $text-muted;
+    padding: 1;
 }
 
 ContactsScreen ListView {
     height: 1fr;
+    background: $surface;
     border: none;
 }
 
 ContactsScreen ListView > ListItem {
+    background: $surface;
     padding: 0 1;
 }
 
 ContactsScreen ListView > ListItem.--highlight {
-    background: $accent 30%;
+    background: $surface;
+    text-style: reverse;
 }
 
 .contact-row {
     height: 1;
     layout: horizontal;
+    background: transparent;
 }
 
 .contact-name {
     width: 1fr;
+    background: transparent;
 }
 
 .contact-status {
-    width: 10;
+    width: auto;
+    background: transparent;
     color: $text-muted;
-    text-align: right;
-}
-
-.contact-status.online {
-    color: $success;
-}
-
-.contact-status.unverified {
-    color: $warning;
 }
 
 /* ---------------- ChatScreen ---------------- */
 
 ChatScreen RichLog {
     height: 1fr;
+    background: $surface;
     border: none;
     padding: 0 1;
-    background: $surface;
+    scrollbar-size: 0 0;
 }
 
 ChatScreen Input {
     dock: bottom;
-    height: 3;
-    border: tall $accent 50%;
+    height: 1;
+    background: $surface;
+    border: none;
+    padding: 0 1;
 }
 
 /* ---------------- ExchangeLinksScreen ---------------- */
 
 ExchangeLinksScreen #my-pane {
     height: 1fr;
-    padding: 1 2;
-    border-bottom: solid $accent 30%;
+    padding: 0 1;
 }
 
 ExchangeLinksScreen #my-toggle {
@@ -102,20 +96,24 @@ ExchangeLinksScreen #my-link {
 
 ExchangeLinksScreen #add-pane {
     height: auto;
-    padding: 1 2;
+    padding: 0 1;
 }
 
 ExchangeLinksScreen #add-pane Label {
     height: 1;
+    padding: 0;
     color: $text-muted;
 }
 
 ExchangeLinksScreen #add-pane Input {
-    margin-bottom: 1;
+    height: 1;
+    background: $surface;
+    border: none;
+    padding: 0;
+    margin: 0 0 1 0;
 }
 
 ExchangeLinksScreen #add-status {
     height: auto;
     color: $text-muted;
-    padding-top: 1;
 }

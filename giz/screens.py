@@ -1,27 +1,23 @@
 """Three screens: Contacts, Chat, Exchange Links.
 
-The whole UI is a stack of these three screens. ContactsScreen is the
-home screen and is always at the bottom of the stack. Pushing onto it
-navigates to a new screen; popping returns home. We never put more
-than one screen on top of Contacts, so navigation is shallow and
-predictable.
+Pure text. No mouse. No buttons. No colored boxes. Each screen is:
+
+    line 1                  title
+    line 2..N-1             content
+    last line               hint (single dim line of available keys)
 
 Keyboard model:
-    Contacts:        Up/Down -> select   Enter -> chat   a -> exchange   q -> quit
-    Chat:            Enter on input bar sends   Esc -> back
-    Exchange Links:  t/q/c toggle your-link format   Esc -> back
-                     Tab moves focus through paste-link / alias / Add button
-
-We never use the mouse; every action has a single-key binding visible
-in the bottom hint bar. Slash commands and scrolling-prompt model are
-both gone; this is a proper screened TUI.
+    Contacts:  Up/Down -> select   Enter -> chat   a -> add   r -> refresh   q -> quit
+    Chat:      Enter on input -> send   Esc -> back
+    Exchange:  t/q/c toggle your-link format   Tab -> next field
+               Enter on link -> jump to alias   Enter on alias -> submit   Esc -> back
 """
 
 from __future__ import annotations
 
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -38,7 +34,7 @@ from textual.widgets import (
 )
 
 from . import handshake
-from .briar import BriarClient, Contact
+from .briar import Contact
 
 if TYPE_CHECKING:
     from .app import GizApp
@@ -47,14 +43,8 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------- Contacts
 
 class ContactsScreen(Screen):
-    """Home screen: list of contacts with online dot.
-
-    Up/Down to select; Enter opens chat with that contact; 'a' opens
-    the Exchange-Links screen; 'q' quits. Nothing else.
-    """
-
     BINDINGS = [
-        Binding("a", "add_contact", "add contact", show=True),
+        Binding("a", "add_contact", "add", show=True),
         Binding("r", "refresh", "refresh", show=True),
         Binding("q", "quit", "quit", show=True),
         Binding("enter", "open_chat", "chat", show=False, priority=True),
@@ -71,7 +61,7 @@ class ContactsScreen(Screen):
         yield ListView(id="contacts-list")
         yield Static(id="empty")
         yield Static(
-            "[enter] chat   [a] add contact   [r] refresh   [q] quit",
+            "enter chat   a add   r refresh   q quit",
             id="hint",
         )
 
@@ -95,9 +85,7 @@ class ContactsScreen(Screen):
         list_view.clear()
         empty = self.query_one("#empty", Static)
         if not contacts:
-            empty.update(
-                "no contacts yet. press [bold]a[/bold] to exchange links."
-            )
+            empty.update("no contacts. press a to add one.")
             empty.display = True
             list_view.display = False
             return
@@ -106,8 +94,7 @@ class ContactsScreen(Screen):
         for c in contacts:
             unread = self.app.unread.get(c.id, 0)
             list_view.append(_contact_item(c, unread))
-        if contacts:
-            list_view.index = 0
+        list_view.index = 0
 
     def action_add_contact(self) -> None:
         self.app.push_screen(ExchangeLinksScreen())
@@ -135,17 +122,16 @@ class ContactsScreen(Screen):
 
 
 def _contact_item(c: Contact, unread: int) -> ListItem:
-    online = "online" if c.connected else "offline"
-    css_class = "online" if c.connected else ""
-    if not c.verified and c.connected:
-        online = "unverified"
-        css_class = "unverified"
+    if c.connected:
+        status = "online" if c.verified else "online, unverified"
+    else:
+        status = "offline"
     name_text = c.display
     if unread:
-        name_text = f"{c.display}  ({unread} new)"
+        name_text = f"{c.display} ({unread} new)"
     row = Horizontal(
         Label(name_text, classes="contact-name"),
-        Label(online, classes=f"contact-status {css_class}".strip()),
+        Label(status, classes="contact-status"),
         classes="contact-row",
     )
     return ListItem(row)
@@ -154,8 +140,6 @@ def _contact_item(c: Contact, unread: int) -> ListItem:
 # ---------------------------------------------------------------- Chat
 
 class ChatScreen(Screen):
-    """Chat with one contact. RichLog of history + Input bar."""
-
     BINDINGS = [
         Binding("escape", "back", "back", show=True),
     ]
@@ -167,14 +151,10 @@ class ChatScreen(Screen):
         self.contact = contact
 
     def compose(self) -> ComposeResult:
-        title = self._title()
-        yield Static(title, id="title")
-        yield RichLog(highlight=False, markup=True, wrap=True, id="log")
-        yield Input(placeholder=f"message {self.contact.display}...", id="msg")
-        yield Static(
-            "[enter] send   [esc] back",
-            id="hint",
-        )
+        yield Static(self._title(), id="title")
+        yield RichLog(highlight=False, markup=False, wrap=True, id="log")
+        yield Input(id="msg")
+        yield Static("enter send   esc back", id="hint")
 
     def on_mount(self) -> None:
         self._load_history()
@@ -185,10 +165,11 @@ class ChatScreen(Screen):
             pass
 
     def _title(self) -> str:
-        state = "online" if self.contact.connected else "offline"
-        if self.contact.connected and not self.contact.verified:
-            state = "online, unverified"
-        return f"giz / chat / {self.contact.display}  ({state})"
+        if self.contact.connected:
+            state = "online" if self.contact.verified else "online, unverified"
+        else:
+            state = "offline"
+        return f"giz / {self.contact.display} ({state})"
 
     def _load_history(self) -> None:
         log = self.query_one("#log", RichLog)
@@ -196,10 +177,10 @@ class ChatScreen(Screen):
         try:
             msgs = self.app.client.messages(self.contact.id)
         except Exception as exc:
-            log.write(f"[red]could not load history: {exc}[/red]")
+            log.write(f"could not load history: {exc}")
             return
         if not msgs:
-            log.write("[dim](no messages yet. type below to send.)[/dim]")
+            log.write("(no messages yet)")
             return
         for m in msgs:
             self._write_message(m.text, m.timestamp, outgoing=m.is_outgoing)
@@ -207,10 +188,8 @@ class ChatScreen(Screen):
     def _write_message(self, text: str, ts_ms: int, *, outgoing: bool) -> None:
         log = self.query_one("#log", RichLog)
         when = _fmt_time(ts_ms)
-        if outgoing:
-            log.write(f"[dim]{when}[/dim] [green]me:[/green] {text}")
-        else:
-            log.write(f"[dim]{when}[/dim] [cyan]{self.contact.display}:[/cyan] {text}")
+        who = "me" if outgoing else self.contact.display
+        log.write(f"{when} {who}: {text}")
 
     def add_message_inbound(self, text: str, ts_ms: int) -> None:
         self._write_message(text, ts_ms, outgoing=False)
@@ -230,8 +209,7 @@ class ChatScreen(Screen):
         try:
             self.app.client.send_message(self.contact.id, text)
         except Exception as exc:
-            log = self.query_one("#log", RichLog)
-            log.write(f"[red]send failed: {exc}[/red]")
+            self.query_one("#log", RichLog).write(f"send failed: {exc}")
             return
         self._write_message(text, int(time.time() * 1000), outgoing=True)
         self.query_one(Input).value = ""
@@ -246,18 +224,17 @@ class ExchangeLinksScreen(Screen):
     """Two-way link exchange.
 
     Top: your own link, in three formats (t=text, q=qr, c=code).
-    Bottom: paste a friend's link, give it an alias, press Enter
-    (or click Add). Esc returns to Contacts.
+    Bottom: paste a friend's link, give them a name. Esc returns home.
 
     The toggle bindings (t/q/c) only fire when the inputs are not
     focused, since Inputs consume printable characters. Tab moves
-    focus between toggle area, paste-link, alias, and Add button.
+    focus between paste-link and alias.
     """
 
     BINDINGS = [
         Binding("escape", "back", "back", show=True),
         Binding("t", "show_text", "text", show=False),
-        Binding("q", "show_qr", "QR", show=False),
+        Binding("q", "show_qr", "qr", show=False),
         Binding("c", "show_code", "code", show=False),
     ]
 
@@ -271,23 +248,20 @@ class ExchangeLinksScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static("giz / exchange links", id="title")
         yield Vertical(
-            Static(
-                "your link.  toggle: [t] text   [q] QR   [c] short-code",
-                id="my-toggle",
-            ),
+            Static("your link  (t text  q qr  c short-code)", id="my-toggle"),
             Static("loading...", id="my-link"),
             id="my-pane",
         )
         yield Vertical(
-            Label("paste a friend's briar:// link:"),
+            Label("paste a friend's briar:// link, then enter:"),
             Input(placeholder="briar://...", id="paste-link"),
-            Label("name for this contact:"),
+            Label("name for this contact, then enter to add:"),
             Input(placeholder="alias", id="paste-alias"),
             Static("", id="add-status"),
             id="add-pane",
         )
         yield Static(
-            "[t/q/c] toggle format   [tab] next field   [enter] add   [esc] back",
+            "t/q/c toggle   tab next field   enter add   esc back",
             id="hint",
         )
 
@@ -302,7 +276,7 @@ class ExchangeLinksScreen(Screen):
         except Exception as exc:
             self._link = None
             self.query_one("#my-link", Static).update(
-                Text(f"could not get link: {exc}", style="red")
+                f"could not get link: {exc}"
             )
 
     def _render_link(self) -> None:
@@ -310,15 +284,11 @@ class ExchangeLinksScreen(Screen):
             return
         widget = self.query_one("#my-link", Static)
         if self._mode == "text":
-            widget.update(Text(self._link, style="cyan", no_wrap=True))
+            widget.update(Text(self._link, no_wrap=True))
         elif self._mode == "qr":
             widget.update(Text(handshake.qr_block(self._link, large=False), no_wrap=True))
         elif self._mode == "code":
-            widget.update(Text(
-                handshake.short_code(self._link),
-                style="bold cyan",
-                no_wrap=True,
-            ))
+            widget.update(Text(handshake.short_code(self._link), no_wrap=True))
 
     def action_show_text(self) -> None:
         self._mode = "text"
@@ -336,18 +306,13 @@ class ExchangeLinksScreen(Screen):
         self.app.pop_screen()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        # First Enter on the link input moves focus to the alias input;
-        # Enter on alias submits. Keeps the flow keyboard-only without
-        # any button to look at.
         if event.input.id == "paste-link":
             link = event.input.value.strip()
             status = self.query_one("#add-status", Static)
             if not link:
                 return
             if not link.startswith("briar://"):
-                status.update(Text(
-                    "that does not look like a briar:// link.", style="red"
-                ))
+                status.update("not a briar:// link.")
                 return
             status.update("")
             self.set_focus(self.query_one("#paste-alias", Input))
@@ -359,23 +324,22 @@ class ExchangeLinksScreen(Screen):
         alias = self.query_one("#paste-alias", Input).value.strip()
         status = self.query_one("#add-status", Static)
         if not link.startswith("briar://"):
-            status.update(Text("that does not look like a briar:// link.", style="red"))
+            status.update("not a briar:// link.")
             return
         if not alias:
-            status.update(Text("please give this contact a name.", style="yellow"))
+            status.update("name cannot be empty.")
             return
         try:
             self.app.client.add_pending(link, alias)
         except Exception as exc:
-            status.update(Text(f"add failed: {exc}", style="red"))
+            status.update(f"add failed: {exc}")
             return
         self.query_one("#paste-link", Input).value = ""
         self.query_one("#paste-alias", Input).value = ""
-        status.update(Text(
-            f"pending: '{alias}'. handshake completes when both sides are online. "
-            f"press [esc] to return to contacts.",
-            style="green",
-        ))
+        status.update(
+            f"added '{alias}'. handshake completes when both are online. "
+            f"esc to go back."
+        )
 
 
 def _fmt_time(ts_ms: int) -> str:
