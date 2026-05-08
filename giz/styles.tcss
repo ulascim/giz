@@ -117,3 +117,18 @@ ExchangeLinksScreen #add-status {
     height: auto;
     color: $text-muted;
 }
+
+/* ---------------- InfoScreen ---------------- */
+
+InfoScreen #info-scroll {
+    height: 1fr;
+    background: $surface;
+    border: none;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+}
+
+InfoScreen #info-body {
+    height: auto;
+    padding: 0;
+}

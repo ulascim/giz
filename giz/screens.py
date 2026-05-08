@@ -22,7 +22,7 @@ from typing import List, Optional, TYPE_CHECKING
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
     Input,
@@ -46,6 +46,7 @@ class ContactsScreen(Screen):
     BINDINGS = [
         Binding("a", "add_contact", "add", show=True),
         Binding("r", "refresh", "refresh", show=True),
+        Binding("i", "info", "info", show=True),
         Binding("q", "quit", "quit", show=True),
         Binding("enter", "open_chat", "chat", show=False, priority=True),
     ]
@@ -61,7 +62,7 @@ class ContactsScreen(Screen):
         yield ListView(id="contacts-list")
         yield Static(id="empty")
         yield Static(
-            "enter chat   a add   r refresh   q quit",
+            "enter chat   a add   r refresh   i info   q quit",
             id="hint",
         )
 
@@ -101,6 +102,9 @@ class ContactsScreen(Screen):
 
     def action_refresh(self) -> None:
         self.refresh_contacts()
+
+    def action_info(self) -> None:
+        self.app.push_screen(InfoScreen())
 
     def action_quit(self) -> None:
         self.app.exit(0)
@@ -358,3 +362,96 @@ def _fmt_time(ts_ms: int) -> str:
         return datetime.fromtimestamp(ts_ms / 1000.0).strftime("%H:%M")
     except (ValueError, OSError):
         return "--:--"
+
+
+# ---------------------------------------------------------------- Info
+
+INFO_TEXT = """\
+trust model, from outside in:
+
+  hardware    same as Signal. if your CPU or firmware is compromised
+              (Pegasus, baseband, etc.), every messenger loses. only
+              mitigation is a clean device.
+
+  OS          same as Signal. Apple / Microsoft / Google can read
+              whatever they want at this layer. only mitigation is a
+              clean OS.
+
+  app         giz is open source, ~1500 lines of Python around
+              Briar. you can audit it in one sitting. Briar's crypto
+              is upstream, peer-reviewed, and unchanged by us.
+
+  account     no phone, no email, no central server. nobody has a
+              "giz account database" because there isn't one.
+              Signal needs a phone number. WhatsApp needs a phone
+              number. Telegram needs a phone number.
+
+  network     every byte goes through Tor. nobody, not even Briar
+              the project, sees your IP or who you talk to. Signal
+              and WhatsApp see both endpoints of every conversation.
+
+  message     end-to-end encrypted with the Bramble protocol
+              (Curve25519 + XSalsa20-Poly1305). same strength
+              category as Signal. forward-secret per session.
+
+  at rest     local database encrypted with a key derived from your
+              password (Argon2id). typing the duress password wipes
+              that database irreversibly.
+
+
+what giz does NOT protect you from:
+
+  - malware on the machine you are typing on. screen recorders,
+    keyloggers, accessibility-API spies all win.
+  - a compromised OS or firmware. see "hardware" / "OS" above.
+  - the duress wipe is observable: an attacker who saw you using
+    giz five minutes ago and now sees "no account" can guess.
+  - sharing your link via a leaky channel (SMS, plain email)
+    without verifying the short-code over the phone afterward.
+  - subpoena of the metadata your friend's device locally stores
+    (timestamps, message text, contact name).
+
+
+comparison:
+
+                    phone#  central   open    e2ee   tor    duress
+                    needed  server    source  msgs   route  wipe
+  giz               no      no        yes     yes    yes    yes
+  Signal            yes     yes       yes     yes    no     no
+  WhatsApp          yes     yes       no*     yes    no     no
+  Telegram (cloud)  yes     yes       partial no     no     no
+  iMessage          yes     yes       no      yes    no     no
+
+  *WhatsApp's protocol is open (Signal Protocol); the client is not.
+
+
+bottom line:
+
+  giz protects the wire and the disk. it cannot protect the device.
+  if your laptop is clean, your messages are private from everyone
+  including Apple, your ISP, and the Briar project. if your laptop
+  is not clean, no messenger on earth can save you.
+"""
+
+
+class InfoScreen(Screen):
+    BINDINGS = [
+        Binding("escape", "back", "back", show=True),
+        Binding("q", "back", "back", show=False),
+    ]
+
+    app: "GizApp"  # type: ignore[assignment]
+
+    def compose(self) -> ComposeResult:
+        yield Static("giz / info", id="title")
+        yield VerticalScroll(
+            Static(INFO_TEXT, id="info-body"),
+            id="info-scroll",
+        )
+        yield Static(
+            "up/down or pgup/pgdn to scroll   esc back",
+            id="hint",
+        )
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
