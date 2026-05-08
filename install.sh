@@ -21,16 +21,22 @@
 
 set -euo pipefail
 
-GIZ_VERSION="v0.1.0"
-GIZ_BRANCH="main"
+GIZ_VERSION="v0.1.1"
 REPO="ulascim/giz"
-RELEASE_BASE="https://github.com/${REPO}/releases/download/${GIZ_VERSION}"
-# Source is pulled from the live branch tip; JAR stays pinned by SHA-256
-# below. The tag only governs which release of the briar-headless JAR
-# we trust. This lets us ship UI / wrapper fixes without recutting a
-# release that re-uploads the unchanged JARs.
-SOURCE_TARBALL="https://github.com/${REPO}/archive/refs/heads/${GIZ_BRANCH}.tar.gz"
+RELEASE_BASE="https://github.com/${REPO}/releases/download/v0.1.0"
+SOURCE_TARBALL="https://github.com/${REPO}/archive/refs/tags/${GIZ_VERSION}.tar.gz"
 
+# SHA-256 of the source tarball at the tag. Computed once when the tag
+# is cut and recorded here. install.sh aborts on mismatch; this is the
+# binding artifact integrity check for everything inside the source
+# archive (giz/*.py, requirements.lock.txt, pyproject.toml, etc.).
+# Auditors verify by:
+#   curl -fsSL https://github.com/ulascim/giz/archive/refs/tags/v0.1.1.tar.gz \
+#     | shasum -a 256
+SOURCE_SHA="05507ed19b46c28ee057e9ed216d2eec131a14bca2d006a49260cbee58593664"
+
+# JAR is shipped with the v0.1.0 release (the binary did not change
+# between v0.1.0 and v0.1.1; only the wrapper did). Verified by SHA.
 JAR_SHA_MACOS_AARCH64="12d8efc1d65fc78cfa2c365cd2bc47632d56841f4f20d7dd411f5d95e8d1fa57"
 
 INSTALL_ROOT="${HOME}/.local/share/giz"
@@ -154,6 +160,19 @@ mkdir -p "${INSTALL_ROOT}" "${DATA_DIR}" "$(dirname "${LAUNCHER}")"
 
 dim "downloading source ${SOURCE_TARBALL}"
 curl -fsSL "${SOURCE_TARBALL}" -o "${TMP_DIR}/giz.tar.gz"
+
+ACTUAL_SRC_SHA="$(shasum -a 256 "${TMP_DIR}/giz.tar.gz" | awk '{print $1}')"
+if [[ "${ACTUAL_SRC_SHA}" != "${SOURCE_SHA}" ]]; then
+    red "SHA-256 mismatch on source tarball"
+    red "  expected: ${SOURCE_SHA}"
+    red "  actual:   ${ACTUAL_SRC_SHA}"
+    red "Refusing to install. The source archive at the tag does not"
+    red "match the SHA pinned in this installer. Either the install"
+    red "script is out of date or someone replaced the source archive."
+    exit 4
+fi
+green "source verified: ${ACTUAL_SRC_SHA}"
+
 tar -xzf "${TMP_DIR}/giz.tar.gz" -C "${TMP_DIR}"
 SRC_DIR="$(echo "${TMP_DIR}"/giz-*)"
 [[ -d "${SRC_DIR}" ]] || die "source tarball did not extract as expected"
@@ -184,7 +203,12 @@ VENV="${INSTALL_ROOT}/venv"
 rm -rf "${VENV}"
 python3 -m venv "${VENV}"
 "${VENV}/bin/pip" install --quiet --upgrade pip
-"${VENV}/bin/pip" install --quiet -r "${INSTALL_ROOT}/repo/requirements.txt"
+
+# --require-hashes refuses any package (including transitive deps)
+# whose tarball / wheel does not match the sha256 listed in the
+# lockfile. This is the supply-chain gate for everything pip installs.
+"${VENV}/bin/pip" install --quiet --require-hashes \
+    -r "${INSTALL_ROOT}/repo/requirements.lock.txt"
 
 # ---- launcher ---------------------------------------------------------------
 

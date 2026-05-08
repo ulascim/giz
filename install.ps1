@@ -18,14 +18,18 @@
 $ErrorActionPreference = 'Stop'
 $PSDefaultParameterValues['*:Encoding'] = 'utf8'
 
-$GIZ_VERSION = 'v0.1.0'
-$GIZ_BRANCH  = 'main'
+$GIZ_VERSION = 'v0.1.1'
 $REPO        = 'ulascim/giz'
-$RELEASE_BASE   = "https://github.com/$REPO/releases/download/$GIZ_VERSION"
-# Source is pulled from the live branch tip; JAR stays pinned by SHA-256
-# below. The tag only governs which release of briar-headless we trust.
-$SOURCE_TARBALL = "https://github.com/$REPO/archive/refs/heads/$GIZ_BRANCH.zip"
+$RELEASE_BASE   = "https://github.com/$REPO/releases/download/v0.1.0"
+$SOURCE_TARBALL = "https://github.com/$REPO/archive/refs/tags/$GIZ_VERSION.zip"
 
+# SHA-256 of the source zip at the tag. install.ps1 aborts on
+# mismatch. Auditors verify with:
+#   (Get-FileHash giz-v0.1.1.zip -Algorithm SHA256).Hash
+$SOURCE_SHA = '41f3d0eb2464b5f3a2e8791e17ef24f0cd11369e7d67791266ac5ff1f90cdc1f'
+
+# JAR is shipped with the v0.1.0 release (the binary did not change
+# between v0.1.0 and v0.1.1; only the wrapper did). Verified by SHA.
 $JAR_NAME = 'briar-headless-windows-x86_64.jar'
 $JAR_SHA  = 'ed056e80bdf0e9fe97084ebee7ce619ba49784070afe23532c8d25e16efbe4b2'
 
@@ -137,6 +141,19 @@ New-Item -ItemType Directory -Force -Path $INSTALL_ROOT, $DATA_DIR, $BIN_DIR | O
 Dim "downloading source $SOURCE_TARBALL"
 $zip = Join-Path $TMP_DIR 'giz.zip'
 Invoke-WebRequest -UseBasicParsing -Uri $SOURCE_TARBALL -OutFile $zip
+
+$ActualSrcSha = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+if ($ActualSrcSha -ne $SOURCE_SHA) {
+    Red "SHA-256 mismatch on source zip"
+    Red "  expected: $SOURCE_SHA"
+    Red "  actual:   $ActualSrcSha"
+    Red "Refusing to install. The source archive at the tag does not"
+    Red "match the SHA pinned in this installer."
+    Cleanup
+    exit 4
+}
+Green "source verified: $ActualSrcSha"
+
 Expand-Archive -Force -Path $zip -DestinationPath $TMP_DIR
 
 $srcDir = Get-ChildItem -Path $TMP_DIR -Directory | Where-Object { $_.Name -like 'giz-*' } | Select-Object -First 1
@@ -173,7 +190,11 @@ if (Test-Path $venv) { Remove-Item -Recurse -Force $venv }
 $venvPy = Join-Path $venv 'Scripts\python.exe'
 if (-not (Test-Path $venvPy)) { Die "venv python not at $venvPy" }
 & $venvPy -m pip install --quiet --upgrade pip
-& $venvPy -m pip install --quiet -r (Join-Path $repoDest 'requirements.txt')
+# --require-hashes refuses any package (including transitive deps)
+# whose tarball / wheel does not match the sha256 listed in the
+# lockfile. This is the supply-chain gate for everything pip installs.
+& $venvPy -m pip install --quiet --require-hashes `
+    -r (Join-Path $repoDest 'requirements.lock.txt')
 & $venvPy -m pip install --quiet -e $repoDest
 
 $venvGiz = Join-Path $venv 'Scripts\giz.exe'
