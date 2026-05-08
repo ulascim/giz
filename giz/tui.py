@@ -60,11 +60,42 @@ class TUI:
         self._refresh_contacts()
         self._print_banner()
         self._print_help_brief()
+        self._print_next_step_hint()
         try:
             self._main_loop()
         except (EOFError, KeyboardInterrupt):
             self._console.print("\n[dim]bye[/dim]")
         return 0
+
+    def _print_next_step_hint(self) -> None:
+        if not self._contacts:
+            self._console.print(
+                "\n[bold]first time? do this:[/bold]\n"
+                "  [cyan]/me[/cyan]            share your link with your friend\n"
+                "  [cyan]/add <link>[/cyan]    paste a link you received\n"
+                "  [cyan]/help[/cyan]          full command list\n"
+            )
+            return
+        unverified = [c for c in self._contacts if self._unverified.get(c.id)]
+        connected = [c for c in self._contacts if c.connected]
+        if connected:
+            target = connected[0]
+            self._console.print(
+                f"\n[dim]{target.display} is online. /select {target.display} "
+                f"and type to chat.[/dim]\n"
+            )
+        elif self._contacts:
+            names = ", ".join(c.display for c in self._contacts[:3])
+            self._console.print(
+                f"\n[dim]contacts: {names} (all offline). "
+                f"messages will queue and deliver when both sides are online.[/dim]\n"
+            )
+        if unverified:
+            names = ", ".join(c.display for c in unverified)
+            self._console.print(
+                f"[yellow]unverified contacts: {names}. "
+                f"run /verify <name> over a phone call to rule out MITM.[/yellow]\n"
+            )
 
     def _events_setup(self) -> None:
         self._events_thread = threading.Thread(
