@@ -19,9 +19,12 @@ $ErrorActionPreference = 'Stop'
 $PSDefaultParameterValues['*:Encoding'] = 'utf8'
 
 $GIZ_VERSION = 'v0.1.0'
+$GIZ_BRANCH  = 'main'
 $REPO        = 'ulascim/giz'
 $RELEASE_BASE   = "https://github.com/$REPO/releases/download/$GIZ_VERSION"
-$SOURCE_TARBALL = "https://github.com/$REPO/archive/refs/tags/$GIZ_VERSION.tar.gz"
+# Source is pulled from the live branch tip; JAR stays pinned by SHA-256
+# below. The tag only governs which release of briar-headless we trust.
+$SOURCE_TARBALL = "https://github.com/$REPO/archive/refs/heads/$GIZ_BRANCH.zip"
 
 $JAR_NAME = 'briar-headless-windows-x86_64.jar'
 $JAR_SHA  = 'ed056e80bdf0e9fe97084ebee7ce619ba49784070afe23532c8d25e16efbe4b2'
@@ -132,19 +135,9 @@ Dim "python: $((& $PY --version))"
 New-Item -ItemType Directory -Force -Path $INSTALL_ROOT, $DATA_DIR, $BIN_DIR | Out-Null
 
 Dim "downloading source $SOURCE_TARBALL"
-$tarball = Join-Path $TMP_DIR 'giz.tar.gz'
-Invoke-WebRequest -UseBasicParsing -Uri $SOURCE_TARBALL -OutFile $tarball
-
-# tar is built into Windows 10+. If we hit an older system, fall back to
-# Expand-Archive on a .zip - but the GitHub Release also serves .zip:
-if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
-    $zipUrl = "https://github.com/$REPO/archive/refs/tags/$GIZ_VERSION.zip"
-    $zip    = Join-Path $TMP_DIR 'giz.zip'
-    Invoke-WebRequest -UseBasicParsing -Uri $zipUrl -OutFile $zip
-    Expand-Archive -Force -Path $zip -DestinationPath $TMP_DIR
-} else {
-    & tar -xzf $tarball -C $TMP_DIR
-}
+$zip = Join-Path $TMP_DIR 'giz.zip'
+Invoke-WebRequest -UseBasicParsing -Uri $SOURCE_TARBALL -OutFile $zip
+Expand-Archive -Force -Path $zip -DestinationPath $TMP_DIR
 
 $srcDir = Get-ChildItem -Path $TMP_DIR -Directory | Where-Object { $_.Name -like 'giz-*' } | Select-Object -First 1
 if (-not $srcDir) { Die "source archive did not extract as expected" }

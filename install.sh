@@ -22,9 +22,14 @@
 set -euo pipefail
 
 GIZ_VERSION="v0.1.0"
+GIZ_BRANCH="main"
 REPO="ulascim/giz"
 RELEASE_BASE="https://github.com/${REPO}/releases/download/${GIZ_VERSION}"
-SOURCE_TARBALL="https://github.com/${REPO}/archive/refs/tags/${GIZ_VERSION}.tar.gz"
+# Source is pulled from the live branch tip; JAR stays pinned by SHA-256
+# below. The tag only governs which release of the briar-headless JAR
+# we trust. This lets us ship UI / wrapper fixes without recutting a
+# release that re-uploads the unchanged JARs.
+SOURCE_TARBALL="https://github.com/${REPO}/archive/refs/heads/${GIZ_BRANCH}.tar.gz"
 
 JAR_SHA_MACOS_AARCH64="12d8efc1d65fc78cfa2c365cd2bc47632d56841f4f20d7dd411f5d95e8d1fa57"
 
