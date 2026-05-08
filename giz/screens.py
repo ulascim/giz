@@ -27,10 +27,8 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import (
-    Button,
     Input,
     Label,
     ListItem,
@@ -285,9 +283,6 @@ class ExchangeLinksScreen(Screen):
             Input(placeholder="briar://...", id="paste-link"),
             Label("name for this contact:"),
             Input(placeholder="alias", id="paste-alias"),
-            Horizontal(
-                Button("Add contact", id="add-btn", variant="primary"),
-            ),
             Static("", id="add-status"),
             id="add-pane",
         )
@@ -340,11 +335,23 @@ class ExchangeLinksScreen(Screen):
     def action_back(self) -> None:
         self.app.pop_screen()
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "add-btn":
-            self._submit_add()
-
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        # First Enter on the link input moves focus to the alias input;
+        # Enter on alias submits. Keeps the flow keyboard-only without
+        # any button to look at.
+        if event.input.id == "paste-link":
+            link = event.input.value.strip()
+            status = self.query_one("#add-status", Static)
+            if not link:
+                return
+            if not link.startswith("briar://"):
+                status.update(Text(
+                    "that does not look like a briar:// link.", style="red"
+                ))
+                return
+            status.update("")
+            self.set_focus(self.query_one("#paste-alias", Input))
+            return
         self._submit_add()
 
     def _submit_add(self) -> None:
