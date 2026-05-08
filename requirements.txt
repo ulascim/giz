@@ -1,0 +1,5 @@
+rich==13.9.4
+websocket-client==1.8.0
+requests==2.32.3
+segno==1.6.1
+argon2-cffi==23.1.0

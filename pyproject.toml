@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "giz"
+version = "0.1.0"
+description = "minimal terminal-only secure messenger over Briar + Tor"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "ulascim" }]
+dependencies = [
+    "rich>=13.9,<14",
+    "websocket-client>=1.8,<2",
+    "requests>=2.32,<3",
+    "segno>=1.6,<2",
+    "argon2-cffi>=23.1,<24",
+]
+
+[project.scripts]
+giz = "giz.__main__:main"
+
+[tool.setuptools]
+packages = ["giz"]

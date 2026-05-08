@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.eggs/
+*.egg-info/
+dist/
+build/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Local data (must never be committed)
+.giz/
+*.jar
+auth_token
+.gizhashes
+.lock
+
+# OS
+.DS_Store
+Thumbs.db
