@@ -222,4 +222,12 @@ esac
 green "install complete. starting first-run setup..."
 echo
 
-exec "${LAUNCHER}" --setup
+# Redirect stdin from the controlling terminal explicitly so that
+# 'curl ... | bash' still allows interactive input during setup.
+# Without this, getpass and input() see EOF immediately and abort.
+if [[ -r /dev/tty ]]; then
+    exec "${LAUNCHER}" --setup </dev/tty
+else
+    yellow "warning: /dev/tty unavailable. Run \"giz --setup\" from a terminal to finish."
+    exit 0
+fi
