@@ -204,16 +204,32 @@ if [[ "${OS_KIND}" == "Darwin" ]] && command -v tmutil >/dev/null 2>&1; then
     tmutil addexclusion "${DATA_DIR}" >/dev/null 2>&1 || true
 fi
 
-# ---- PATH hint --------------------------------------------------------------
+# ---- PATH (auto, idempotent) ------------------------------------------------
+
+LAUNCHER_DIR="$(dirname "${LAUNCHER}")"
+PATH_LINE='export PATH="${HOME}/.local/bin:${PATH}"  # added by giz installer'
+
+ensure_path_in_rc() {
+    local rc="$1"
+    [[ -f "${rc}" ]] || touch "${rc}"
+    if ! grep -q '# added by giz installer' "${rc}" 2>/dev/null; then
+        printf '\n%s\n' "${PATH_LINE}" >> "${rc}"
+        dim "added ${LAUNCHER_DIR} to PATH in ${rc}"
+    fi
+}
 
 case ":${PATH}:" in
-    *":$(dirname "${LAUNCHER}"):"*) ;;
+    *":${LAUNCHER_DIR}:"*) ;;
     *)
-        yellow "note: $(dirname "${LAUNCHER}") is not in your PATH."
-        yellow "      add this line to ~/.zshrc or ~/.bashrc:"
-        echo
-        echo "    export PATH=\"\${HOME}/.local/bin:\${PATH}\""
-        echo
+        # Append to the user's actual login shell rc, falling back sanely
+        # if the conventional file does not exist yet.
+        case "$(basename "${SHELL:-/bin/zsh}")" in
+            zsh)  ensure_path_in_rc "${HOME}/.zshrc" ;;
+            bash) ensure_path_in_rc "${HOME}/.bash_profile" ;;
+            fish) yellow "fish detected; add ~/.local/bin to fish_user_paths manually." ;;
+            *)    ensure_path_in_rc "${HOME}/.profile" ;;
+        esac
+        yellow "open a new terminal or run 'source ~/.zshrc' to pick up PATH changes."
         ;;
 esac
 
