@@ -284,11 +284,11 @@ class ExchangeLinksScreen(Screen):
             return
         widget = self.query_one("#my-link", Static)
         if self._mode == "text":
-            widget.update(Text(self._link, no_wrap=True))
+            widget.update(self._link)
         elif self._mode == "qr":
             widget.update(Text(handshake.qr_block(self._link, large=False), no_wrap=True))
         elif self._mode == "code":
-            widget.update(Text(handshake.short_code(self._link), no_wrap=True))
+            widget.update(handshake.short_code(self._link))
 
     def action_show_text(self) -> None:
         self._mode = "text"
