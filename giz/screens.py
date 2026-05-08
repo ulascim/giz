@@ -489,13 +489,15 @@ adversaries, ranked by capability (and what each can do to you):
     sees encrypted Tor traffic going to a guard relay. learns
     nothing about content, contacts, or who is on the other end.
 
-  the company that makes the messenger
-    in giz: nobody. there is no giz server, no giz account
-    database, no giz operator with a subpoena address. nobody to
-    compel because there is no one in the loop.
-    in Signal: the Signal Foundation knows your phone number and
+  giz itself / the people behind your messenger
+    giz: there is no server, no account database, no operator,
+    no subpoena address. nobody is in the loop to be compelled,
+    bribed, or hacked. the source is public; whoever wrote it
+    cannot push secret updates to you - your installer pulls
+    from a public commit you can read.
+    Signal: the Signal Foundation knows your phone number and
     can see traffic timing.
-    in WhatsApp / iMessage: Meta / Apple know your phone number,
+    WhatsApp / iMessage: Meta / Apple know your phone number,
     see traffic, and hold the keys to legally-mandated backdoors
     in some jurisdictions.
 
