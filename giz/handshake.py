@@ -19,6 +19,7 @@ giz emits a strong warning before complying.
 from __future__ import annotations
 
 import hashlib
+import io
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -85,11 +86,19 @@ def long_fingerprint(blob: str) -> str:
 
 
 def qr_block(link: str, *, large: bool = False) -> str:
-    """Render the link as a Unicode-block QR code suitable for a terminal."""
+    """Render the link as a Unicode-block QR code suitable for a terminal.
+
+    segno.terminal() writes to its out= argument (stdout by default)
+    and returns None. We pass an in-memory buffer so we get back a
+    string we can hand to rich.Text without touching stdout directly.
+    """
     qr = segno.make(link, error="m")
+    buf = io.StringIO()
     if large:
-        return qr.terminal(border=2, compact=False)
-    return qr.terminal(border=1, compact=True)
+        qr.terminal(out=buf, border=2, compact=False)
+    else:
+        qr.terminal(out=buf, border=1, compact=True)
+    return buf.getvalue()
 
 
 def pick_channel(
