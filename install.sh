@@ -183,19 +183,20 @@ python3 -m venv "${VENV}"
 
 # ---- launcher ---------------------------------------------------------------
 
+"${VENV}/bin/pip" install --quiet -e "${INSTALL_ROOT}/repo"
+
 cat > "${LAUNCHER}" <<EOF
 #!/usr/bin/env bash
 set -e
-exec "${VENV}/bin/python" -m giz \\
+# Use the venv's giz entry point (NOT python -m giz) so the launcher
+# does not pick up a sibling giz/ package from whatever cwd the user
+# happens to be in.
+exec "${VENV}/bin/giz" \\
     --data-dir "${DATA_DIR}" \\
     --jar "${INSTALL_ROOT}/briar-headless.jar" \\
     "\$@"
 EOF
 chmod +x "${LAUNCHER}"
-
-# Make 'giz' importable from the venv.
-"${VENV}/bin/pip" install --quiet -e "${INSTALL_ROOT}/repo" >/dev/null 2>&1 || \
-    cp -R "${INSTALL_ROOT}/repo/giz" "${VENV}/lib/python"*/site-packages/
 
 # ---- Time Machine exclusion (best-effort) -----------------------------------
 

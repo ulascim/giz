@@ -183,11 +183,17 @@ if (-not (Test-Path $venvPy)) { Die "venv python not at $venvPy" }
 & $venvPy -m pip install --quiet -r (Join-Path $repoDest 'requirements.txt')
 & $venvPy -m pip install --quiet -e $repoDest
 
+$venvGiz = Join-Path $venv 'Scripts\giz.exe'
+if (-not (Test-Path $venvGiz)) {
+    # Fallback for older pip versions that produce .py instead of .exe shims
+    $venvGiz = Join-Path $venv 'Scripts\giz-script.py'
+}
+
 # ---- launcher ---------------------------------------------------------------
 
 @"
 @echo off
-"$venvPy" -m giz --data-dir "$DATA_DIR" --jar "$INSTALL_ROOT\briar-headless.jar" %*
+"$venvGiz" --data-dir "$DATA_DIR" --jar "$INSTALL_ROOT\briar-headless.jar" %*
 "@ | Set-Content -Path $LAUNCHER -Encoding ASCII
 
 # ---- PATH hint --------------------------------------------------------------
