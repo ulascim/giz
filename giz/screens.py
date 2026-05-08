@@ -434,6 +434,14 @@ trust model, from outside in:
   app         giz is open source, ~1500 lines of Python around
               Briar. you can audit it in one sitting. Briar's crypto
               is upstream, peer-reviewed, and unchanged by us.
+              the giz wrapper itself is supply-chain hardened:
+              GPG-signed git tags, source archive pinned by SHA-256,
+              every Python dep + transitive dep pinned by SHA-256,
+              installer aborts on any mismatch. at runtime the giz
+              process refuses outbound connects to anything that is
+              not loopback, runs with core dumps off and ptrace deny,
+              and chmods its own data dir 0700 / hash files 0600 on
+              every launch.
 
   account     no phone, no email, no central server. nobody has a
               "giz account database" because there isn't one.
@@ -490,16 +498,26 @@ adversaries, ranked by capability (and what each can do to you):
     nothing about content, contacts, or who is on the other end.
 
   giz itself / the people behind your messenger
-    giz: there is no server, no account database, no operator,
-    no subpoena address. nobody is in the loop to be compelled,
-    bribed, or hacked. the source is public; whoever wrote it
-    cannot push secret updates to you - your installer pulls
-    from a public commit you can read.
-    Signal: the Signal Foundation knows your phone number and
-    can see traffic timing.
-    WhatsApp / iMessage: Meta / Apple know your phone number,
-    see traffic, and hold the keys to legally-mandated backdoors
-    in some jurisdictions.
+    giz: there is no server, no account database, no operator, no
+    subpoena address. the source is public and the install chain is
+    hash-pinned end to end:
+      - the git tag is GPG-signed; auditors verify with
+        'git verify-tag v0.1.1'
+      - the source archive is verified against a SHA-256 pinned in
+        the installer before extraction
+      - every Python dep, including all transitive ones, is
+        installed via 'pip install --require-hashes' against a
+        committed lockfile; pip refuses any tarball that does not
+        match
+      - the briar-headless JAR is verified against a SHA-256 pinned
+        in the installer
+    even a compromise of the maintainer's GitHub account is not
+    enough on its own; the attacker would also need the GPG signing
+    key (kept off GitHub) to mint a tag auditors trust.
+    Signal: the Signal Foundation knows your phone number and can
+    see traffic timing. WhatsApp / iMessage: Meta / Apple know your
+    phone number, see traffic, and hold the keys to legally-mandated
+    backdoors in some jurisdictions.
 
   one government acting alone, with full legal powers
     can subpoena the local telco for browsing metadata. through
@@ -555,17 +573,36 @@ what giz is NOT for:
 
 bottom line:
 
-  giz + a clean device puts you above 99.9% of realistic adversaries.
-  the remaining 0.1% - multiple major intelligence agencies all
-  cooperating, targeting you by name, for years - cannot be defeated
-  by any messenger on the market today. their counter is not crypto;
-  it is operational discipline (different device, different network,
-  less communication, no reused identity).
+  giz now closes the wrapper-itself gap that every other "secure
+  messenger" leaves open. the protocol (Briar) was already at the
+  Signal level. with v0.1.1 the supply chain that delivers the
+  wrapper is at the same level: signed tag, hash-pinned source,
+  hash-pinned deps, runtime-locked-down process. there is no piece
+  of code anywhere in the install chain that can change without
+  breaking a SHA-256 you can verify yourself.
 
-  giz protects the wire and the disk. it cannot protect the device.
-  if your laptop is clean, your messages are private from everyone
-  including Apple, your ISP, and the Briar project itself. if your
-  laptop is not clean, no messenger on earth can save you.
+  on a clean device, giz is private from EVERYONE on this list
+  except the last two:
+
+    1. coordinated multi-state intelligence services running enough
+       Tor relays simultaneously to do end-to-end timing correlation
+       on a sustained, named target, over years. this is the
+       documented upper bound of Tor itself, not of giz, and no
+       commodity messenger on earth survives it.
+
+    2. malware on the actual device you are typing on. screen
+       recorders and keyloggers read what you type before any
+       encryption happens. solving this is not giz's job; it is
+       the job of the OS / hardware you chose.
+
+  in practice (1) requires you to be a state-level target by name,
+  for years, with no operational discipline. (2) requires your
+  laptop to already be hacked.
+
+  for a normal person, including activists, journalists, and people
+  who simply do not want Apple / Meta / Google reading their chats:
+  on a clean device, giz is the highest privacy bar you can hit
+  with off-the-shelf tooling. it is not infinite. it is calibrated.
 """
 
 
