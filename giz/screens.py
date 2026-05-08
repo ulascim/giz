@@ -238,6 +238,11 @@ class ExchangeLinksScreen(Screen):
         Binding("c", "show_code", "code", show=False),
     ]
 
+    # Do not auto-focus any widget on mount; t/q/c bindings need to
+    # win over the paste-link Input until the user explicitly tabs in.
+    # Empty string is falsy so Screen._on_mount() skips auto-focus.
+    AUTO_FOCUS = ""
+
     app: "GizApp"  # type: ignore[assignment]
 
     def __init__(self) -> None:
@@ -261,14 +266,13 @@ class ExchangeLinksScreen(Screen):
             id="add-pane",
         )
         yield Static(
-            "t/q/c toggle   tab next field   enter add   esc back",
+            "t/q/c toggle   tab edit fields   enter advance   esc leave field / back",
             id="hint",
         )
 
     def on_mount(self) -> None:
         self._load_link()
         self._render_link()
-        self.set_focus(self.query_one("#paste-link", Input))
 
     def _load_link(self) -> None:
         try:
@@ -303,6 +307,12 @@ class ExchangeLinksScreen(Screen):
         self._render_link()
 
     def action_back(self) -> None:
+        # First esc: leave any input we're typing in (so t/q/c work again).
+        # Second esc (no input focused): actually go back to Contacts.
+        focused = self.app.focused
+        if isinstance(focused, Input):
+            self.set_focus(None)
+            return
         self.app.pop_screen()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -336,6 +346,7 @@ class ExchangeLinksScreen(Screen):
             return
         self.query_one("#paste-link", Input).value = ""
         self.query_one("#paste-alias", Input).value = ""
+        self.set_focus(None)
         status.update(
             f"added '{alias}'. handshake completes when both are online. "
             f"esc to go back."
