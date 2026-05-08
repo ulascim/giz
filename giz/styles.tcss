@@ -1,0 +1,121 @@
+/* giz - minimal terminal styling.
+   Three screens, all dark, cyan accents. No emoji, no surplus chrome. */
+
+Screen {
+    background: $surface;
+    color: $text;
+}
+
+#title {
+    dock: top;
+    height: 1;
+    color: $accent;
+    background: $surface;
+    padding: 0 1;
+    text-style: bold;
+}
+
+#hint {
+    dock: bottom;
+    height: 1;
+    color: $text-muted;
+    background: $surface;
+    padding: 0 1;
+}
+
+/* ---------------- ContactsScreen ---------------- */
+
+#empty {
+    height: auto;
+    padding: 1 2;
+    color: $text-muted;
+}
+
+ContactsScreen ListView {
+    height: 1fr;
+    border: none;
+}
+
+ContactsScreen ListView > ListItem {
+    padding: 0 1;
+}
+
+ContactsScreen ListView > ListItem.--highlight {
+    background: $accent 30%;
+}
+
+.contact-row {
+    height: 1;
+    layout: horizontal;
+}
+
+.contact-name {
+    width: 1fr;
+}
+
+.contact-status {
+    width: 10;
+    color: $text-muted;
+    text-align: right;
+}
+
+.contact-status.online {
+    color: $success;
+}
+
+.contact-status.unverified {
+    color: $warning;
+}
+
+/* ---------------- ChatScreen ---------------- */
+
+ChatScreen RichLog {
+    height: 1fr;
+    border: none;
+    padding: 0 1;
+    background: $surface;
+}
+
+ChatScreen Input {
+    dock: bottom;
+    height: 3;
+    border: tall $accent 50%;
+}
+
+/* ---------------- ExchangeLinksScreen ---------------- */
+
+ExchangeLinksScreen #my-pane {
+    height: 1fr;
+    padding: 1 2;
+    border-bottom: solid $accent 30%;
+}
+
+ExchangeLinksScreen #my-toggle {
+    height: 1;
+    color: $text-muted;
+}
+
+ExchangeLinksScreen #my-link {
+    height: 1fr;
+    padding: 1 0;
+}
+
+ExchangeLinksScreen #add-pane {
+    height: auto;
+    padding: 1 2;
+}
+
+ExchangeLinksScreen #add-pane Label {
+    height: 1;
+    color: $text-muted;
+}
+
+ExchangeLinksScreen #add-pane Input {
+    margin-bottom: 1;
+}
+
+ExchangeLinksScreen #add-status {
+    height: auto;
+    color: $text-muted;
+    padding-top: 1;
+}

@@ -30,7 +30,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import backup_check, briar, duress, handshake, hardening, lifecycle, tui
+from . import backup_check, briar, duress, hardening, lifecycle
+from .app import GizApp
 
 
 DEFAULT_DATA_DIR = Path.home() / ".giz"
@@ -241,14 +242,18 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
         sys.stderr.write(f"daemon never became ready: {exc}\n")
         return 15
 
-    ui = tui.TUI(client, "you")
+    app = GizApp(client, nickname="you")
     sub = briar.EventSubscription(
-        "127.0.0.1", free_port, token, ui.on_event, ui.on_disconnect
+        "127.0.0.1", free_port, token,
+        app.handle_briar_event, app.handle_briar_disconnect,
     )
     sub.start()
 
+    rc = 0
     try:
-        rc = ui.run()
+        result = app.run()
+        if isinstance(result, int):
+            rc = result
     finally:
         sub.stop()
         client.close()

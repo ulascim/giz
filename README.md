@@ -45,43 +45,51 @@ After it finishes, type `giz` in any terminal to log in.
 - Stores the local message database encrypted at rest with Argon2id-derived
   keys. The database is unreadable without your password.
 
+## The UI
+
+Three screens, keyboard only, no mouse:
+
+| screen   | what            | keys                                      |
+|----------|-----------------|-------------------------------------------|
+| Contacts | list of friends | up/down to navigate, enter to chat, `a` to add, `q` to quit |
+| Chat     | one conversation | type to compose, enter to send, `esc` for back |
+| Exchange | swap links     | `t`/`q`/`c` toggle your link as text/QR/code, paste a friend's link, enter to add, `esc` for back |
+
+That's the whole UI. There are no slash commands.
+
 ## Adding a contact
 
-1. Run `giz`, log in, then type `/me`.
-2. Pick a channel for sharing your link. The TUI ranks channels by
-   leak-resistance and tells you whether `/verify` is recommended afterward:
+1. Run `giz`, log in. You land on the Contacts screen.
+2. Press `a` to open the Exchange-Links screen.
+3. The top half shows **your** link. Press `t`/`q`/`c` to display it as
+   plain text (paste-friendly), as a QR code (show on a video call or
+   in person), or as a 12-digit short-code (read aloud over a phone
+   call). Send it to your friend through whichever channel you trust.
+4. When your friend sends back **their** link, paste it into the
+   bottom-half input, give them a name, and press Enter.
+5. When both of you are online, the Tor handshake completes
+   automatically and the contact flips from offline to online on the
+   Contacts screen.
 
-   | rank | channel | leaks | mitm | verify? |
-   |------|---------|-------|------|---------|
-   | best | in person, voice call, video call, Tor channel | none / negligible | resistant | optional |
-   | ok   | Signal | Signal Foundation knows you exchanged something | theoretical | recommended |
-   | bad  | WhatsApp, iMessage, Telegram | Meta or Apple knows you are starting Briar | theoretical | required |
-   | no   | plain SMS, unencrypted email | everyone in transit | trivial | refused |
+For sharing the link, channels ranked by leak-resistance:
 
-3. Send the link via the chosen channel. Friend runs `/add <link>` and
-   picks how they received it.
-4. When both of you are online, the Tor handshake completes automatically
-   and the contact flips from `pending` to `online`. Now you can chat.
-5. (Optional, recommended for any leaky channel.) Type `/verify <name>`,
-   read the displayed fingerprint aloud over a phone call, and have your
-   friend confirm theirs matches.
+| rank | channel | leaks | mitm |
+|------|---------|-------|------|
+| best | in person (QR), voice call (short-code), video call (QR), Tor channel | none / negligible | resistant |
+| ok   | Signal | Signal Foundation knows you exchanged something | theoretical |
+| bad  | WhatsApp, iMessage, Telegram | Meta or Apple knows you are starting Briar | theoretical |
+| no   | plain SMS, unencrypted email | everyone in transit | trivial |
 
-## Commands
+## Recommended terminal
 
-```
-/me              show your link (interactive channel picker)
-/add <link>      add a contact from their briar:// link
-/list            list contacts
-/select <name>   switch active contact
-/verify <name>   show contact fingerprint for out-of-band check
-/status          daemon + connection status
-/history         show message history with active contact
-/clear <name>    delete history with one contact (local only)
-/del <name>      delete a contact entirely
-/quit  /q        exit cleanly
-/help            full command list
-(any text)       send to active contact
-```
+`giz` uses [Textual][textual] for its TUI. Any modern terminal works,
+but for the cleanest rendering use:
+
+- **macOS:** Terminal.app (built in) or [iTerm2][iterm2].
+- **Windows:** [Windows Terminal][wt].
+
+Avoid the legacy `cmd.exe` console - it does not handle Unicode block
+characters well, which makes QR codes look broken.
 
 ## Duress password
 
@@ -129,3 +137,6 @@ Briar; we do not implement any.
 MIT. See [LICENSE](LICENSE).
 
 [briar]: https://briarproject.org
+[textual]: https://textual.textualize.io
+[iterm2]: https://iterm2.com
+[wt]: https://aka.ms/terminal

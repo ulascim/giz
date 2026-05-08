@@ -12,11 +12,15 @@ license = { text = "MIT" }
 authors = [{ name = "ulascim" }]
 dependencies = [
     "rich>=13.9,<14",
+    "textual>=0.86,<1",
     "websocket-client>=1.8,<2",
     "requests>=2.32,<3",
     "segno>=1.6,<2",
     "argon2-cffi>=23.1,<24",
 ]
+
+[tool.setuptools.package-data]
+giz = ["styles.tcss"]
 
 [project.scripts]
 giz = "giz.__main__:main"
