@@ -128,3 +128,69 @@ finding, contact the repo owner directly).
 
 The TUI shows this table at the moment you run `/me` or `/add`. The
 tradeoff is yours to make; `giz` makes the cost visible.
+
+## Reproducing the trust chain
+
+The whole point of `giz` is that you do not have to trust me. The
+installer is a small shell script you can read; everything it
+downloads is hash-verified against constants written into that
+script. The git tag the script points at is GPG-signed so a
+sufficiently paranoid auditor can confirm the source archive
+genuinely came from this repository.
+
+Steps to verify everything yourself before running the installer on a
+real machine:
+
+1. **Read the installer.** `install.sh` and `install.ps1` are ~250
+   lines together. Read them top to bottom. Note the version string
+   (e.g. `v0.1.1`), the source SHA constant, and the JAR SHA constant.
+
+2. **Verify the git tag signature.** Clone the repo, then check that
+   the tag was signed by the maintainer's published GPG key:
+
+   ```bash
+   git clone https://github.com/ulascim/giz && cd giz
+   git verify-tag v0.1.1
+   ```
+
+   If the signature does not validate, do not proceed.
+
+3. **Verify the source tarball SHA.** The installer fetches
+   `https://github.com/ulascim/giz/archive/refs/tags/v0.1.1.tar.gz`
+   and checks it against a hard-coded SHA-256. Confirm the same value
+   yourself:
+
+   ```bash
+   curl -fsSL https://github.com/ulascim/giz/archive/refs/tags/v0.1.1.tar.gz \
+       | shasum -a 256
+   ```
+
+   This must match `SOURCE_SHA` in `install.sh`. If it does not, the
+   tarball you would receive does not match the tag you just verified;
+   stop.
+
+4. **Verify the briar-headless JAR SHA.** Same idea, downloaded from
+   the GitHub Releases page; the SHA constant is in the installer.
+
+5. **Verify the Python dependency lockfile.** The installer runs
+   `pip install --require-hashes -r requirements.lock.txt`. pip will
+   refuse to install any package whose tarball does not match the
+   listed SHA-256, including transitive dependencies. Read
+   `requirements.lock.txt` and confirm every package is pinned to a
+   specific version with at least one `--hash=sha256:...` entry.
+
+6. **Audit the runtime guards.** Read `giz/hardening.py`. The
+   `install_guards()` function applies, in order: core-dump off,
+   ptrace deny, logging silenced, outbound non-loopback sockets
+   blocked, signal handlers, single-instance lockfile. Read
+   `giz/__main__.py` to confirm `install_guards()` runs before any
+   secret is read.
+
+If any of those steps fail, do not run the installer.
+
+The combined effect of (2), (3), (4), (5), and the JAR pin is that
+the only way for a malicious party to compromise `giz` between this
+repository and your machine is to (a) compromise the maintainer's
+GPG key and push a poisoned tag, or (b) compromise PyPI's signing
+infrastructure for one of the pinned dependency hashes. Neither is
+the threshold of a casual attacker.

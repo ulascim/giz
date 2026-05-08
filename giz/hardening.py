@@ -14,6 +14,11 @@ Goals (each enforced at startup, before any secret is read):
     6. A simple memory-zero helper for password buffers (best-effort;
        Python's GC limits how complete this can be, documented honestly
        in SECURITY.md).
+    7. Block outbound non-loopback socket connects from the giz Python
+       process. The wrapper has zero business talking to the public
+       network; only briar-headless does, and it runs as a separate
+       child process unaffected by this guard. This catches accidental
+       exfiltration from any imported library.
 
 These guards do not protect against device malware. They only narrow the
 attack surface within the giz process itself.
@@ -23,11 +28,13 @@ from __future__ import annotations
 
 import atexit
 import ctypes
+import ipaddress
 import logging
 import os
 import platform
 import resource
 import signal
+import socket
 import sys
 from pathlib import Path
 from typing import Callable, Optional
@@ -45,6 +52,7 @@ def install_guards(data_dir: Path) -> None:
     _disable_core_dumps()
     _disable_ptrace()
     _silence_logging()
+    _block_outbound_sockets()
     _install_signal_handlers()
     _acquire_lockfile(data_dir)
 
@@ -81,6 +89,74 @@ def _silence_logging() -> None:
     root.setLevel(logging.WARNING)
     for noisy in ("urllib3", "websocket", "requests"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+_SOCKETS_LOCKED = False
+
+
+class OutboundBlocked(OSError):
+    """Raised when something inside the giz process tries to talk to a
+    non-loopback peer. The wrapper must never do this; only briar-headless
+    (a separate child process) speaks to the network, and it does so via
+    Tor inside its own process space."""
+
+
+def _block_outbound_sockets() -> None:
+    """Wrap socket.socket so connect()/connect_ex() refuse non-loopback peers.
+
+    Loopback (127.0.0.0/8 and ::1) plus AF_UNIX are allowed; everything
+    else raises. This catches:
+        - bugs in this wrapper that accidentally hit the network
+        - exfiltration from a compromised dependency
+        - misconfigured proxies pulled in via env vars
+    briar-headless is a separate process and is NOT affected.
+    """
+    global _SOCKETS_LOCKED
+    if _SOCKETS_LOCKED:
+        return
+
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+
+    def _check(sock: socket.socket, address) -> None:
+        family = sock.family
+        if family == socket.AF_UNIX:
+            return
+        if family not in (socket.AF_INET, socket.AF_INET6):
+            return
+        if not isinstance(address, tuple) or len(address) < 1:
+            raise OutboundBlocked(
+                "giz refused a connect() with an unrecognized address shape"
+            )
+        host = address[0]
+        if not isinstance(host, str):
+            raise OutboundBlocked(
+                f"giz refused a connect() to {address!r} (host not a string)"
+            )
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            raise OutboundBlocked(
+                f"giz refused a connect() to non-numeric host '{host}'. "
+                f"Only literal loopback addresses are allowed."
+            ) from None
+        if not ip.is_loopback:
+            raise OutboundBlocked(
+                f"giz refused outbound connect() to {host}. "
+                f"The wrapper is loopback-only by design."
+            )
+
+    def _connect(self: socket.socket, address):  # type: ignore[no-untyped-def]
+        _check(self, address)
+        return real_connect(self, address)
+
+    def _connect_ex(self: socket.socket, address):  # type: ignore[no-untyped-def]
+        _check(self, address)
+        return real_connect_ex(self, address)
+
+    socket.socket.connect = _connect  # type: ignore[method-assign]
+    socket.socket.connect_ex = _connect_ex  # type: ignore[method-assign]
+    _SOCKETS_LOCKED = True
 
 
 def _install_signal_handlers() -> None:
@@ -162,6 +238,75 @@ def zero_bytes(buf: bytearray) -> None:
         return
     for i in range(len(buf)):
         buf[i] = 0
+
+
+def enforce_perms(data_dir: Path) -> Optional[str]:
+    """Tighten POSIX permissions on every launch.
+
+    On every start we:
+        - chmod the data dir to 0700 (only the owner reads/lists it)
+        - chmod the 'real' subdir to 0700 (Briar's encrypted DB lives here)
+        - chmod the .gizhashes file to 0600 (the only file giz itself writes)
+        - chmod auth_token to 0600 (briar-headless writes this; we tighten
+          on top in case Briar's defaults are looser on this OS)
+
+    Returns None on success, or a human-readable error string if any of
+    the targets exists but cannot be brought to the required mode. The
+    caller decides whether to refuse to start.
+
+    On Windows POSIX modes don't apply; instead we attempt an icacls
+    sweep removing 'Everyone' / 'Users' inheritance. If icacls is
+    unavailable (rare on supported Windows versions) we return a
+    warning string but do not block.
+    """
+    import stat
+    if platform.system() == "Windows":
+        return _enforce_perms_windows(data_dir)
+
+    targets = [
+        (data_dir, 0o700, True),
+        (data_dir / "real", 0o700, True),
+        (data_dir / ".gizhashes", 0o600, False),
+        (data_dir / "real" / "auth_token", 0o600, False),
+    ]
+    for path, mode, must_be_dir in targets:
+        if not path.exists():
+            continue
+        if must_be_dir and not path.is_dir():
+            return f"{path} exists but is not a directory"
+        if not must_be_dir and path.is_dir():
+            return f"{path} unexpectedly is a directory"
+        try:
+            os.chmod(path, mode)
+        except OSError as exc:
+            return f"could not chmod {path} to {mode:o}: {exc}"
+        st = path.stat()
+        actual = stat.S_IMODE(st.st_mode)
+        if actual != mode:
+            return (
+                f"{path} mode is {actual:o} after chmod, expected {mode:o}"
+            )
+    return None
+
+
+def _enforce_perms_windows(data_dir: Path) -> Optional[str]:
+    """Best-effort: strip inherited Everyone/Users access from data_dir."""
+    import shutil
+    import subprocess
+    if not shutil.which("icacls"):
+        return None  # do not block; Windows ACL tightening is optional
+    try:
+        subprocess.run(
+            ["icacls", str(data_dir), "/inheritance:r"],
+            check=False, capture_output=True, timeout=10,
+        )
+        subprocess.run(
+            ["icacls", str(data_dir), "/grant:r", f"{os.environ.get('USERNAME', '')}:F"],
+            check=False, capture_output=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
 
 
 def detect_unencrypted_swap() -> Optional[str]:

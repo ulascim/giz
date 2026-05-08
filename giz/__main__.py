@@ -59,6 +59,10 @@ def main(argv: Optional[list] = None) -> int:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     hardening.install_guards(data_dir)
+    perms_error = hardening.enforce_perms(data_dir)
+    if perms_error:
+        sys.stderr.write(f"refused to start: {perms_error}\n")
+        return 16
     swap_warning = hardening.detect_unencrypted_swap()
     if swap_warning:
         sys.stderr.write(f"warning: {swap_warning}\n")
@@ -179,6 +183,12 @@ def _setup(data_dir: Path, jar: Path, port: int) -> int:
     hardening.zero_bytes(real_pw)
     hardening.zero_bytes(duress_pw)
 
+    # Re-tighten now that briar-headless has written auth_token and
+    # the database. enforce_perms is idempotent and silent on success.
+    perms_error = hardening.enforce_perms(data_dir)
+    if perms_error:
+        sys.stderr.write(f"warning: {perms_error}\n")
+
     print("\nsetup complete. run 'giz' to log in.")
     return 0
 
@@ -232,6 +242,12 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
         proc.stop()
         sys.stderr.write(f"daemon did not produce auth token: {exc}\n")
         return 14
+
+    # Re-tighten after briar-headless wrote auth_token. enforce_perms is
+    # silent on success and reports any path it could not lock down.
+    perms_error = hardening.enforce_perms(data_dir)
+    if perms_error:
+        sys.stderr.write(f"warning: {perms_error}\n")
 
     client = briar.BriarClient("127.0.0.1", free_port, token)
     try:
