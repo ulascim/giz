@@ -264,6 +264,7 @@ class ExchangeLinksScreen(Screen):
         yield Vertical(
             Label("paste a friend's briar:// link, then enter:"),
             Input(placeholder="briar://...", id="paste-link"),
+            Static("", id="paste-code"),
             Label("name for this contact, then enter to add:"),
             Input(placeholder="alias", id="paste-alias"),
             Static("", id="add-status"),
@@ -319,6 +320,23 @@ class ExchangeLinksScreen(Screen):
             return
         self.app.pop_screen()
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        # Live-update the short-code of whatever the user typed/pasted
+        # so they can compare it on the phone with the friend who sent
+        # this link. If the codes do not match, the link was tampered
+        # with in transit and adding it would MITM the conversation.
+        if event.input.id != "paste-link":
+            return
+        code_widget = self.query_one("#paste-code", Static)
+        link = event.value.strip()
+        if not link.startswith("briar://"):
+            code_widget.update("")
+            return
+        code_widget.update(
+            f"short-code of pasted link: {handshake.short_code(link)}\n"
+            f"(have your friend read out their 'c' code; they must match)"
+        )
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "paste-link":
             link = event.input.value.strip()
@@ -350,6 +368,7 @@ class ExchangeLinksScreen(Screen):
             return
         self.query_one("#paste-link", Input).value = ""
         self.query_one("#paste-alias", Input).value = ""
+        self.query_one("#paste-code", Static).update("")
         self.set_focus(None)
         status.update(
             f"added '{alias}'. handshake completes when both are online. "
@@ -367,6 +386,41 @@ def _fmt_time(ts_ms: int) -> str:
 # ---------------------------------------------------------------- Info
 
 INFO_TEXT = """\
+how adding a contact works:
+
+  every user has ONE unique briar:// link generated locally on their
+  device. it is a long Tor-hidden-service address derived from your
+  Ed25519 keypair. nobody else can produce the same link.
+
+  to chat with a friend you must each give the other your link. you
+  send yours to them; they send theirs to you. the screen offers
+  three views of YOUR link:
+
+    t  the URL as plain text - paste into iMessage, email, paste-bin
+    q  the same URL as a QR code  - show on a video call or in person
+    c  a 12-digit hash of YOUR link - read aloud over a phone call
+
+  the 12-digit code is NOT a way to send the link. you cannot
+  reconstruct the link from 12 digits. it is a fingerprint, used to
+  detect tampering on the channel you used to actually send the link.
+
+  the verification flow:
+
+    1. alice sends bob her briar:// link via SMS or WhatsApp.
+    2. alice presses 'c', sees "1234 5678 9012".
+    3. alice phones bob, reads "1234 5678 9012" aloud.
+    4. bob pastes the link he received into giz. giz immediately
+       shows him the 12-digit hash of the link he just pasted.
+    5. if bob's hash matches what alice read out, the link survived
+       the SMS / WhatsApp trip untouched. if it does not match,
+       someone in the middle swapped the link and adding it would
+       hand the conversation to that attacker.
+
+  if you handed the QR over a video call or showed it in person,
+  this verification step is not necessary - the channel itself is
+  hard to tamper with.
+
+
 trust model, from outside in:
 
   hardware    same as Signal. if your CPU or firmware is compromised

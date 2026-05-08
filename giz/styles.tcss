@@ -113,6 +113,12 @@ ExchangeLinksScreen #add-pane Input {
     margin: 0 0 1 0;
 }
 
+ExchangeLinksScreen #paste-code {
+    height: auto;
+    color: $text-muted;
+    margin: 0 0 1 0;
+}
+
 ExchangeLinksScreen #add-status {
     height: auto;
     color: $text-muted;
