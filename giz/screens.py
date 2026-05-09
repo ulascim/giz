@@ -214,8 +214,8 @@ class ContactsScreen(Screen):
         if kind == "pending":
             self.app.notify(
                 "still handshaking with this contact over Tor. "
-                "the first connection between two new accounts "
-                "usually takes 15-20 minutes. just leave giz open.",
+                "first contact is usually under a minute on a healthy "
+                "network, but can be longer. press d for diagnostics.",
                 severity="warning",
                 timeout=8,
             )
@@ -264,7 +264,7 @@ def _pending_item(p: dict) -> ListItem:
     alias = pc.get("alias") or "(no alias)"
     state = p.get("state", "pending") if isinstance(p, dict) else "pending"
     if state in ("waiting_for_connection", "offline", "connecting"):
-        state_pretty = "pending: handshaking over Tor (15-20 min on first contact)"
+        state_pretty = f"pending: handshaking over Tor ({state})"
     elif state == "adding_contact":
         state_pretty = "pending: finalizing"
     elif state == "failed":
@@ -674,13 +674,12 @@ class AddContactScreen(Screen):
         self.query_one("#paste-alias", Input).value = ""
         self.query_one("#paste-code", Static).update("")
         status.update(
-            f"added '{alias}'. now waiting for the Tor handshake "
-            f"(15-20 minutes for a new pair of accounts). esc to go back."
+            f"added '{alias}'. now waiting for the Tor handshake. "
+            f"usually under a minute on a healthy network. esc to go back."
         )
         self.app.notify(
             f"added '{alias}'. it will appear on the contacts screen as "
-            f"'pending' until both sides finish handshaking over Tor "
-            f"(usually 15-20 minutes for new accounts).",
+            f"'pending' until both sides finish handshaking over Tor.",
             severity="information",
             timeout=8,
         )
@@ -1148,8 +1147,10 @@ class DiagnosticsScreen(Screen):
         if outbound and outbound >= 3 and pending:
             lines.append(
                 "  daemon is reaching Tor and at least one peer handshake is in "
-                "progress. just wait. first contact between two new accounts is "
-                "15-20 min; reconnects are seconds."
+                "progress. on a healthy network this usually completes in well "
+                "under a minute; if a pending state has not changed in several "
+                "minutes the dial is probably failing (look at recent events / "
+                "log below)."
             )
         elif outbound == 0:
             lines.append(
