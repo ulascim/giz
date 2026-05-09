@@ -17,7 +17,12 @@ from typing import Any, Dict, List, Optional
 from textual.app import App
 
 from .briar import BriarClient, Contact
-from .screens import ChatScreen, ContactsScreen, ExchangeLinksScreen
+from .screens import (
+    AddContactScreen,
+    ChatScreen,
+    ContactsScreen,
+    MyLinkScreen,
+)
 
 
 CSS_PATH = str(Path(__file__).with_name("styles.tcss"))

@@ -48,7 +48,8 @@ if TYPE_CHECKING:
 
 class ContactsScreen(Screen):
     BINDINGS = [
-        Binding("a", "add_contact", "add", show=True),
+        Binding("a", "add_contact", "add friend", show=True),
+        Binding("s", "share_link", "share my link", show=True),
         Binding("r", "refresh", "refresh", show=True),
         Binding("i", "info", "info", show=True),
         Binding("q", "quit", "quit", show=True),
@@ -67,7 +68,8 @@ class ContactsScreen(Screen):
         yield ListView(id="contacts-list")
         yield Static(id="empty")
         yield Static(
-            "enter chat   a add   r refresh   i info   q quit",
+            "enter chat   a add a friend   s share my link   "
+            "r refresh   i info   q quit",
             id="hint",
         )
 
@@ -114,7 +116,10 @@ class ContactsScreen(Screen):
         list_view.index = 0
 
     def action_add_contact(self) -> None:
-        self.app.push_screen(ExchangeLinksScreen())
+        self.app.push_screen(AddContactScreen())
+
+    def action_share_link(self) -> None:
+        self.app.push_screen(MyLinkScreen())
 
     def action_refresh(self) -> None:
         self.refresh_contacts()
@@ -314,17 +319,16 @@ def _copy_to_clipboard(text: str) -> bool:
     return False
 
 
-# ---------------------------------------------------------------- Exchange
+# ---------------------------------------------------------------- My Link
 
-class ExchangeLinksScreen(Screen):
-    """Two-way link exchange.
+class MyLinkScreen(Screen):
+    """Show your OWN briar:// link, with copy/QR/short-code views.
 
-    Top: your own link, in three formats (t=text, q=qr, c=code).
-    Bottom: paste a friend's link, give them a name. Esc returns home.
+    This screen does ONE thing: display your link so you can send it
+    to a friend. There are no inputs anywhere. esc just goes back.
 
-    The toggle bindings (t/q/c) only fire when the inputs are not
-    focused, since Inputs consume printable characters. Tab moves
-    focus between paste-link and alias.
+    Format toggles (t/q/c) and the copy key (y) all act on the same
+    target: your own link.
     """
 
     BINDINGS = [
@@ -335,10 +339,8 @@ class ExchangeLinksScreen(Screen):
         Binding("y", "yank", "copy", show=True),
     ]
 
-    # Do not auto-focus any widget on mount; t/q/c bindings need to
-    # win over the paste-link Input until the user explicitly tabs in.
-    # Empty string is falsy so Screen._on_mount() skips auto-focus.
-    AUTO_FOCUS = ""
+    # No inputs on this screen, so auto-focus doesn't matter. The default
+    # focus is fine; t/q/c/y all hit screen-level bindings.
 
     app: "GizApp"  # type: ignore[assignment]
 
@@ -348,23 +350,11 @@ class ExchangeLinksScreen(Screen):
         self._link: Optional[str] = None
 
     def compose(self) -> ComposeResult:
-        yield Static("giz / exchange links", id="title")
-        yield Vertical(
-            Static("your link  (t text  q qr  c short-code)", id="my-toggle"),
-            Static("loading...", id="my-link"),
-            id="my-pane",
-        )
-        yield Vertical(
-            Label("paste a friend's briar:// link, then enter:"),
-            Input(placeholder="briar://...", id="paste-link"),
-            Static("", id="paste-code"),
-            Label("name for this contact, then enter to add:"),
-            Input(placeholder="type a name and press enter", id="paste-alias"),
-            Static("", id="add-status"),
-            id="add-pane",
-        )
+        yield Static("giz / share my link", id="title")
+        yield Static("loading your link...", id="my-link")
+        yield Static("", id="my-status")
         yield Static(
-            "t/q/c toggle   y copy   tab edit fields   enter advance   esc leave/back",
+            "y copy   t text   q qr   c short-code   esc back",
             id="hint",
         )
 
@@ -388,7 +378,9 @@ class ExchangeLinksScreen(Screen):
         if self._mode == "text":
             widget.update(self._link)
         elif self._mode == "qr":
-            widget.update(Text(handshake.qr_block(self._link, large=False), no_wrap=True))
+            widget.update(
+                Text(handshake.qr_block(self._link, large=False), no_wrap=True)
+            )
         elif self._mode == "code":
             widget.update(handshake.short_code(self._link))
 
@@ -405,29 +397,20 @@ class ExchangeLinksScreen(Screen):
         self._render_link()
 
     def action_yank(self) -> None:
-        """Copy the currently-displayed link form to the OS clipboard.
-
-        text mode -> the briar:// URL itself
-        qr mode   -> the briar:// URL (QR is just a visualization of it)
-        code mode -> the 12-digit short-code (read-aloud verification)
-        """
-        status = self.query_one("#add-status", Static)
+        status = self.query_one("#my-status", Static)
         if self._link is None:
             status.update("nothing to copy yet.")
             return
         if self._mode == "code":
-            payload = handshake.short_code(self._link)
-            label = "12-digit short-code"
+            payload, label = handshake.short_code(self._link), "short-code"
         else:
-            payload = self._link
-            label = "briar:// link"
+            payload, label = self._link, "briar:// link"
         if _copy_to_clipboard(payload):
-            status.update(f"copied {label} to clipboard.")
-            # After copying YOUR link, the natural next step is pasting
-            # YOUR FRIEND'S link. Prime the paste-link input so the user
-            # can paste immediately and esc behaves predictably (esc
-            # defocuses input first, then a second esc returns home).
-            self.set_focus(self.query_one("#paste-link", Input))
+            status.update(f"copied {label} to clipboard. paste it to your friend.")
+            self.app.notify(
+                f"copied {label}. paste it into iMessage / WhatsApp / etc.",
+                severity="information", timeout=5,
+            )
         else:
             status.update(
                 "no clipboard tool found "
@@ -435,19 +418,47 @@ class ExchangeLinksScreen(Screen):
             )
 
     def action_back(self) -> None:
-        # First esc: leave any input we're typing in (so t/q/c work again).
-        # Second esc (no input focused): actually go back to Contacts.
-        focused = self.app.focused
-        if isinstance(focused, Input):
-            self.set_focus(None)
-            return
         self.app.pop_screen()
 
+
+# ---------------------------------------------------------------- Add Contact
+
+class AddContactScreen(Screen):
+    """Add a friend by pasting THEIR briar:// link.
+
+    This screen does ONE thing: take a link + a name, hand them to
+    Briar, show a toast on success. No your-link section, no t/q/c
+    keys, no y key, no focus puzzle. The link input is focused on
+    entry so cmd-V works immediately. esc always goes back.
+    """
+
+    BINDINGS = [
+        Binding("escape", "back", "back", show=True),
+    ]
+
+    app: "GizApp"  # type: ignore[assignment]
+
+    def compose(self) -> ComposeResult:
+        yield Static("giz / add a friend", id="title")
+        yield Label("paste your friend's briar:// link, then press enter:")
+        yield Input(placeholder="briar://...", id="paste-link")
+        yield Static("", id="paste-code")
+        yield Label("name for this contact, then press enter to add:")
+        yield Input(placeholder="type a name and press enter", id="paste-alias")
+        yield Static("", id="add-status")
+        yield Static(
+            "type / paste   tab next field   enter advance   esc back",
+            id="hint",
+        )
+
+    def on_mount(self) -> None:
+        # Single screen, single purpose: focus the link input immediately
+        # so cmd-V drops the link straight in. There is nothing else to
+        # collide with on this screen.
+        self.set_focus(self.query_one("#paste-link", Input))
+
     def on_input_changed(self, event: Input.Changed) -> None:
-        # Live-update the short-code of whatever the user typed/pasted
-        # so they can compare it on the phone with the friend who sent
-        # this link. If the codes do not match, the link was tampered
-        # with in transit and adding it would MITM the conversation.
+        # Live short-code of the pasted link, for phone-call MITM check.
         if event.input.id != "paste-link":
             return
         code_widget = self.query_one("#paste-code", Static)
@@ -456,8 +467,8 @@ class ExchangeLinksScreen(Screen):
             code_widget.update("")
             return
         code_widget.update(
-            f"short-code of pasted link: {handshake.short_code(link)}\n"
-            f"(have your friend read out their 'c' code; they must match)"
+            f"short-code of this link: {handshake.short_code(link)}\n"
+            f"(if your friend reads their 'c' code, the two must match)"
         )
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -493,18 +504,28 @@ class ExchangeLinksScreen(Screen):
         self.query_one("#paste-link", Input).value = ""
         self.query_one("#paste-alias", Input).value = ""
         self.query_one("#paste-code", Static).update("")
-        self.set_focus(None)
         status.update(
             f"added '{alias}'. now waiting for the Tor handshake "
             f"(few minutes for new accounts). esc to go back."
         )
-        # A toast is hard to miss; the inline status alone proved confusing.
         self.app.notify(
             f"added '{alias}'. it will appear on the contacts screen as "
             f"'pending' until both sides finish handshaking over Tor.",
             severity="information",
             timeout=8,
         )
+        # Re-focus the link input in case the user wants to add another.
+        self.set_focus(self.query_one("#paste-link", Input))
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+
+# Backwards-compatible alias: existing tests / callers that imported
+# ExchangeLinksScreen still work. The new screen is AddContactScreen
+# (just the paste-friend-link half; the share-MY-link half lives in
+# MyLinkScreen now).
+ExchangeLinksScreen = AddContactScreen
 
 
 def _fmt_time(ts_ms: int) -> str:
