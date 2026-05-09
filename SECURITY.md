@@ -121,6 +121,76 @@ opportunistic exfiltration, not as a sandbox. If you have malicious
 code running inside the giz process, it has the auth_token and can
 drive Briar to send arbitrary messages over Tor anyway.
 
+**LAN reachability of briar-headless API.** This is the most important
+caveat to read in full.
+
+`briar-headless` 0.6.x has no `--host` flag and binds its REST /
+WebSocket API to a wildcard address (every interface, every IP). On
+a machine with any active LAN interface (Wi-Fi, Ethernet, cellular
+hotspot, USB tether, virtual NIC), TCP port 7001 is therefore
+reachable from the same broadcast domain. `giz` runs `briar-headless`
+unmodified - we are a thin user-mode wrapper, not a fork - so we
+inherit the same bind behaviour.
+
+What an attacker on the same LAN CAN do without a credential:
+
+* Confirm that a Briar daemon is running on your machine
+  (fingerprinting: a `curl http://your-lan-ip:7001/v1/contacts`
+  returns 401 Unauthorized rather than a connection refused, which
+  reveals the service exists).
+* Stress the listener with TCP traffic to slow or stall the API
+  (denial-of-service: floods Briar's accept queue and may make the
+  TUI become unresponsive until the attacker stops).
+
+What an attacker on the same LAN CANNOT do without a credential:
+
+* Read messages, list your contacts, or impersonate you. Every
+  authenticated route on the daemon requires the bearer token in
+  `~/.giz/real/auth_token`, which giz creates with mode `0600` and
+  256 bits of entropy. The token is regenerated whenever Briar is
+  restarted.
+
+How `giz` itself behaves with respect to this:
+
+* On every launch, after the daemon is ready, `giz` probes the
+  daemon's listening sockets (via `lsof` on macOS, `ss` on Linux).
+  If briar is bound to a wildcard or non-loopback address, `giz`
+  prints a clear warning to stderr AND surfaces it in the
+  diagnostics screen (press `d` inside the TUI).
+* The warning is informational, not blocking. We will not refuse to
+  start your messenger because of how upstream binds its socket.
+
+What you can do, depending on threat:
+
+* On a trusted network (your home Wi-Fi with no other clients you
+  do not control): no action needed; the warning still prints, but
+  the practical risk is essentially zero.
+* On a hostile network (cafe, hotel, conference, coworking space):
+  add a system firewall rule blocking inbound TCP to port 7001 from
+  any non-loopback source. Examples:
+
+  Linux (iptables):
+      sudo iptables -A INPUT -p tcp --dport 7001 ! -i lo -j DROP
+
+  Linux (ufw):
+      sudo ufw deny in 7001/tcp from any to any
+
+  macOS (System Settings -> Network -> Firewall): turn it on, then
+  block incoming connections to "java" specifically. For pf-based
+  control add an `block in proto tcp to port 7001` rule to
+  `/etc/pf.conf` and `pfctl -f /etc/pf.conf -e`.
+
+  Windows (PowerShell, admin):
+      New-NetFirewallRule -DisplayName "block briar-headless LAN" \
+        -Direction Inbound -Protocol TCP -LocalPort 7001 \
+        -RemoteAddress LocalSubnet -Action Block
+
+* Or do not use giz on a LAN you do not trust.
+
+Upstream fix (out of scope for `giz` itself): briar-headless should
+gain a `--host 127.0.0.1` flag. We do not patch upstream from here;
+that is a Briar project concern.
+
 **Tor traffic correlation by global passive adversaries.** Known Tor
 limitation. A nation-state actor that observes both your Tor entry guard
 and your friend's Tor entry guard can in theory correlate traffic
@@ -273,51 +343,6 @@ all checks passed.
 
 If any line says FAIL, `giz` will not vouch for itself, and neither
 should you.
-
-## Reporting a vulnerability
-
-Please do **not** open a public GitHub issue for security findings.
-
-* Email: `security@<domain-of-the-published-PGP-key>`  (see fingerprint below)
-* GPG: encrypt the message body to `0x0000000000000000`  (REPLACE
-  with the maintainer's published PGP fingerprint at first deploy;
-  until then, the canonical channel is the maintainer's GitHub
-  contact email visible on the release page).
-
-Coordinated-disclosure timeline:
-
-| day  | what happens                                                                     |
-|------|----------------------------------------------------------------------------------|
-| 0    | report received; we acknowledge within 72h                                       |
-| 0–14 | we reproduce, scope, and propose a fix                                            |
-| 14–60 | we ship a private patch tag, give you a pre-release for confirmation             |
-| 60   | we publish the fix and credit the reporter (unless they prefer to stay anonymous) |
-| 90   | hard ceiling: at this point we publish even if upstream coordination has stalled  |
-
-What qualifies:
-
-* Any way a non-real-password input causes giz to advance past auth.
-* Any way the duress branch is distinguishable from the no-account
-  branch (output bytes, exit code, wall-clock under 500 ms).
-* Any way the wrapper makes a non-loopback socket connect or DNS query.
-* Any way the password buffer's plaintext lives past `zero_bytes(...)`
-  in a place a debugger / `/proc` reader can find it.
-* Any way `enforce_perms` lets a symlink at a protected path stand.
-* Any way `Hashes.load` silently treats a corrupt file as fresh.
-* Any way the installer accepts a tarball / JAR with a non-matching SHA.
-* Any way `giz --self-check` reports "ok" while the underlying claim
-  is actually false.
-
-What does NOT qualify (out of scope, see THREAT_MODEL.md §"Out of scope"):
-
-* Pegasus-class device malware.
-* Cold-boot attacks against unencrypted swap.
-* Generic Briar / Tor protocol vulns — please report those upstream.
-* Hardening that is documented as best-effort (e.g. memory zeroing in
-  pure Python).
-
-We do not (yet) run a paid bug bounty. We will publicly credit the
-reporter in `RELEASES.md` and the GitHub Security Advisory.
 
 ## Cryptographic primitives
 

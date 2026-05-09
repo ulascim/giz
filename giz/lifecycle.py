@@ -66,6 +66,11 @@ class HeadlessProcess:
         self._log_buf: Deque[str] = collections.deque(maxlen=400)
         self._log_lock = threading.Lock()
         self._died_callback = None  # type: ignore[var-annotated]
+        # Populated by detect_bind_warning() once the daemon is listening.
+        # See SECURITY.md "LAN reachability": briar-headless 0.6.x has no
+        # --host flag and binds wildcard. We surface that to the user
+        # rather than silently start.
+        self._bind_warning: Optional[str] = None
 
     @property
     def port(self) -> int:
@@ -77,6 +82,36 @@ class HeadlessProcess:
         if self._proc is None:
             return None
         return self._proc.pid
+
+    @property
+    def bind_warning(self) -> Optional[str]:
+        """Human-readable warning iff the daemon is bound LAN-reachable.
+
+        None means: loopback-only (safe), OR we couldn't determine the
+        bind state (we never warn falsely). Populated by
+        detect_bind_warning(), which the caller must invoke AFTER the
+        API is reachable (i.e. after BriarClient.wait_until_ready).
+        """
+        return self._bind_warning
+
+    def detect_bind_warning(self) -> Optional[str]:
+        """Probe the daemon's bind addresses and cache the result.
+
+        Idempotent and never raises. Returns the same string as the
+        bind_warning property after this call returns.
+        """
+        if self._proc is None:
+            return None
+        try:
+            warning = hardening.detect_briar_bind_host(self._proc.pid, self._port)
+        except Exception:
+            # Pure best-effort. We never let a bind probe failure
+            # block the user from talking to their contacts.
+            warning = None
+        self._bind_warning = warning
+        if warning:
+            self._record_log(f"giz: {warning}")
+        return warning
 
     def start(self) -> None:
         java = _find_java()

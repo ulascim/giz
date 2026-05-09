@@ -422,6 +422,18 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
         client.close()
         return 15
 
+    # Probe briar-headless's bind address. briar-headless 0.6.x has no
+    # --host flag; it always binds wildcard, so on any machine with an
+    # active LAN interface the API is reachable from the local network.
+    # The bearer token (in ~/.giz/real/auth_token, mode 0600) still
+    # gates message access, but we surface this honestly so users on
+    # hostile networks can add a system firewall rule. See SECURITY.md
+    # "LAN reachability of briar-headless API".
+    bind_warning = proc.detect_bind_warning()
+    if bind_warning:
+        sys.stderr.write(f"\n{bind_warning}\n\n")
+        sys.stderr.flush()
+
     sys.stdout.write("ready. opening UI.\n")
     sys.stdout.flush()
 

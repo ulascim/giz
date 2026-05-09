@@ -243,6 +243,96 @@ def _check_data_dir_mode() -> Tuple[bool, str]:
     return False, f"~/.giz mode is 0o{mode:o}, expected 0o700"
 
 
+def _check_machine_lock_uid_based() -> Tuple[bool, str]:
+    """Runtime proof that the machine-lock path on POSIX derives from
+    euid, not from $HOME. Acquires nothing; only inspects the path
+    derivation so --self-check is safe to run while a real giz
+    session is open and holding its own lock.
+    """
+    if platform.system() == "Windows":
+        return True, "skipped (POSIX-only fix)"
+    return _run_subproc_check(
+        textwrap.dedent("""
+            import os
+            from giz import hardening
+            real = str(hardening._machine_lock_path())
+            os.environ["HOME"] = "/tmp/attacker-home"
+            spoofed = str(hardening._machine_lock_path())
+            ok = (
+                real.startswith("/tmp/.giz-") and
+                str(os.geteuid()) in real and
+                real == spoofed
+            )
+            print("UID_BASED" if ok else "WRONG", real)
+        """),
+        "UID_BASED",
+    )
+
+
+def _check_enforce_perms_recursive() -> Tuple[bool, str]:
+    """Spawn a subprocess with a synthetic data dir whose 'real/' is
+    seeded with mode-0644 inner files, run enforce_perms, confirm the
+    inner files are now 0600 and inner dirs are 0700. Subprocess
+    isolation keeps the user's real ~/.giz untouched.
+    """
+    if platform.system() == "Windows":
+        return True, "skipped (POSIX modes don't apply)"
+    return _run_subproc_check(
+        textwrap.dedent("""
+            import os, stat, tempfile
+            from pathlib import Path
+            from giz import hardening
+            with tempfile.TemporaryDirectory() as td:
+                d = Path(td)
+                (d / "real").mkdir()
+                (d / "real" / "tor").mkdir()
+                f1 = d / "real" / "db.key"
+                f1.write_bytes(b"x")
+                os.chmod(f1, 0o644)
+                f2 = d / "real" / "tor" / "torrc"
+                f2.write_bytes(b"y")
+                os.chmod(f2, 0o644)
+                err = hardening.enforce_perms(d)
+                if err:
+                    print("ERR", err)
+                else:
+                    m1 = stat.S_IMODE(os.stat(f1).st_mode)
+                    m2 = stat.S_IMODE(os.stat(f2).st_mode)
+                    md = stat.S_IMODE(os.stat(d / "real" / "tor").st_mode)
+                    if m1 == 0o600 and m2 == 0o600 and md == 0o700:
+                        print("RECURSED")
+                    else:
+                        print("WRONG", oct(m1), oct(m2), oct(md))
+        """),
+        "RECURSED",
+    )
+
+
+def _check_bind_probe_helper() -> Tuple[bool, str]:
+    """Confirm hardening.detect_briar_bind_host(pid, port) exists and
+    returns None for a synthetic loopback-bound socket spawned in this
+    same process - i.e. that the helper does not falsely warn about
+    the safe case. This is a regression guard: a future refactor that
+    accidentally returns a non-None warning for loopback bindings
+    would print scary noise at every giz launch.
+    """
+    return _run_subproc_check(
+        textwrap.dedent("""
+            import os, socket
+            from giz import hardening
+            srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1)
+            port = srv.getsockname()[1]
+            warn = hardening.detect_briar_bind_host(os.getpid(), port)
+            if warn is None:
+                print("LOOPBACK_OK")
+            else:
+                print("FALSE_POSITIVE", warn[:80])
+            srv.close()
+        """),
+        "LOOPBACK_OK",
+    )
+
+
 def _check_source_tree_intact() -> Tuple[bool, str]:
     """Hash giz/*.py and confirm the result matches the version baked
     into the source tree. We do not pin against an external manifest
@@ -273,6 +363,9 @@ CHECKS: List[Tuple[str, Callable[[], Tuple[bool, str]]]] = [
     ("logging.basicConfig is a no-op",          _check_basicconfig_noop),
     ("logging.FileHandler is blocked",          _check_filehandler_blocked),
     ("data dir mode (~/.giz)",                  _check_data_dir_mode),
+    ("machine lock is uid-based, not $HOME",    _check_machine_lock_uid_based),
+    ("enforce_perms recurses into real/",       _check_enforce_perms_recursive),
+    ("bind probe accepts loopback (no FP)",     _check_bind_probe_helper),
     ("source tree sha256",                      _check_source_tree_intact),
 ]
 

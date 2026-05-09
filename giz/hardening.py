@@ -392,27 +392,75 @@ def acquire_machine_lock() -> None:
     exit, including hard kill, so a stale lock cannot lock the user
     out forever.
     """
+    if _MACHINE_LOCK_FD is not None:
+        return
+    _acquire_machine_lock_at(_machine_lock_path())
+
+
+def _machine_lock_path() -> Path:
+    """Canonical machine-lock path. Factored out so tests can both
+    (a) verify the path derivation in isolation, and (b) use a custom
+    path via _acquire_machine_lock_at() so a unit test does not fight
+    a live giz session on the developer's machine.
+
+    On POSIX the path MUST NOT depend on $HOME: a hostile or accidental
+    HOME override (e.g. `HOME=/tmp/x giz`) would land on a different
+    lockfile and silently bypass the same-machine guard, which is the
+    exact regression an audit found. We anchor on euid instead, which
+    only root can spoof, on a path that's guaranteed to be identical
+    for every giz launch by the same kernel-level user identity.
+    """
+    if platform.system() == "Windows":
+        # Windows lacks a stable euid concept and the $HOME-spoof
+        # vector here is mostly theoretical; keep the legacy path.
+        lock_dir = Path.home() / ".local" / "share" / "giz"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        return lock_dir / ".machine-lock"
+    # POSIX: /tmp/.giz-<euid>.machine-lock. /tmp is shared across
+    # users so we MUST namespace by uid; the trailing numeric uid
+    # is unspoofable for non-root processes.
+    return Path("/tmp") / f".giz-{os.geteuid()}.machine-lock"
+
+
+def _acquire_machine_lock_at(lock_path: Path) -> None:
+    """Internal: acquire the kernel-level same-machine lock at the
+    exact path given. Production callers go through
+    acquire_machine_lock(); tests use this entry point with a
+    tmp_path-backed location for isolation."""
     global _MACHINE_LOCKFILE, _MACHINE_LOCK_FD
 
     if _MACHINE_LOCK_FD is not None:
         return
 
-    # Per-user (NOT /tmp, which is shared across users) and predictable
-    # so the same path is used by every giz invocation on this account.
-    lock_dir = Path.home() / ".local" / "share" / "giz"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = lock_dir / ".machine-lock"
-
     try:
         fd = os.open(
             str(lock_path),
-            os.O_CREAT | os.O_RDWR,
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
             0o600,
         )
     except OSError as exc:
         raise MachineLockError(
             f"could not open machine lock at {lock_path}: {exc}"
         )
+
+    # Belt-and-braces: confirm the file we just opened is actually owned
+    # by us. A co-tenant with brief write access could pre-create a
+    # wrong-uid file in /tmp; O_NOFOLLOW handles the symlink case but a
+    # hardlink/race pre-created file would still pass O_NOFOLLOW. The
+    # ownership check closes that gap.
+    if platform.system() != "Windows":
+        try:
+            st = os.fstat(fd)
+        except OSError as exc:
+            os.close(fd)
+            raise MachineLockError(f"could not fstat lock fd: {exc}")
+        if st.st_uid != os.geteuid():
+            os.close(fd)
+            raise MachineLockError(
+                f"lock file at {lock_path} is owned by uid {st.st_uid}, "
+                f"not by us (uid {os.geteuid()}); refusing to use it. "
+                f"Inspect the file; this should never happen."
+            )
 
     busy_message = (
         "another giz instance is already running on this machine. "
@@ -485,21 +533,32 @@ def zero_bytes(buf: bytearray) -> None:
 def enforce_perms(data_dir: Path) -> Optional[str]:
     """Tighten POSIX permissions on every launch.
 
-    On every start we:
-        - chmod the data dir to 0700 (only the owner reads/lists it)
-        - chmod the 'real' subdir to 0700 (Briar's encrypted DB lives here)
-        - chmod the .gizhashes file to 0600 (the only file giz itself writes)
-        - chmod auth_token to 0600 (briar-headless writes this; we tighten
-          on top in case Briar's defaults are looser on this OS)
+    Pinned targets (always):
+        - data_dir              0700 (only the owner reads/lists it)
+        - data_dir/real         0700 (Briar's encrypted DB lives here)
+        - data_dir/.gizhashes   0600 (the only file giz itself writes)
+        - data_dir/real/auth_token 0600 (briar-headless writes this)
 
-    Returns None on success, or a human-readable error string if any of
-    the targets exists but cannot be brought to the required mode. The
+    Defense-in-depth recursive sweep across data_dir/real:
+        - directories          0700
+        - regular files        0600
+        - symlinks             refused (no chmod through them)
+
+    Why the recursive sweep: Briar creates db.key, db.key.bak, db.mv.db
+    and tor/* with mode 0644 by default. The parent dir is 0700 so a
+    co-tenant cannot traverse to read them today, BUT if the parent
+    perms ever loosen (a backup tool, a sync tool, an accidental
+    chmod -R, a recovery rsync that doesn't preserve modes), the
+    inner files become world-readable AND contain enough material
+    (encrypted-key blobs + the encrypted database) to brute-force
+    the password offline. Tighten everything to least privilege.
+
+    Returns None on success, or a human-readable error string if any
+    target exists but cannot be brought to the required mode. The
     caller decides whether to refuse to start.
 
     On Windows POSIX modes don't apply; instead we attempt an icacls
-    sweep removing 'Everyone' / 'Users' inheritance. If icacls is
-    unavailable (rare on supported Windows versions) we return a
-    warning string but do not block.
+    sweep removing 'Everyone' / 'Users' inheritance.
     """
     import stat
     if platform.system() == "Windows":
@@ -547,6 +606,41 @@ def enforce_perms(data_dir: Path) -> Optional[str]:
             return (
                 f"{path} mode is {actual:o} after chmod, expected {mode:o}"
             )
+
+    # Defense-in-depth recursive sweep of data_dir/real. We use os.walk
+    # with followlinks=False so a malicious symlink planted deep inside
+    # cannot redirect our chmod to /etc/passwd or similar. Errors during
+    # traversal (permissions, missing files mid-walk) are recorded but
+    # do not abort: the pinned targets above are the security-critical
+    # ones; this loop is a hardening best-effort.
+    real_dir = data_dir / "real"
+    if real_dir.is_dir() and not real_dir.is_symlink():
+        for root, dirs, files in os.walk(real_dir, followlinks=False):
+            root_path = Path(root)
+            try:
+                if not root_path.is_symlink():
+                    os.chmod(root_path, 0o700)
+            except OSError:
+                pass  # best-effort; pinned target above already covered real/
+            for name in files:
+                p = root_path / name
+                try:
+                    if p.is_symlink():
+                        continue  # never chmod through a symlink
+                    os.chmod(p, 0o600)
+                except OSError:
+                    # Common: file vanished mid-walk (Tor / Briar
+                    # rotating state). Not a security failure; ignore.
+                    continue
+            for name in dirs:
+                p = root_path / name
+                try:
+                    if p.is_symlink():
+                        continue
+                    os.chmod(p, 0o700)
+                except OSError:
+                    continue
+
     return None
 
 
@@ -568,6 +662,133 @@ def _enforce_perms_windows(data_dir: Path) -> Optional[str]:
     except (OSError, subprocess.TimeoutExpired):
         pass
     return None
+
+
+def detect_briar_bind_host(briar_pid: int, port: int) -> Optional[str]:
+    """Return a warning string iff briar-headless is bound to a wildcard
+    or non-loopback address on `port`; return None if it's loopback-only,
+    or if we can't determine the bind state (we never warn falsely).
+
+    Why this check exists, in plain terms: briar-headless 0.6.x has no
+    --host flag - it always binds its REST/WebSocket API to wildcard.
+    On a machine with any active LAN interface, that means any peer on
+    the same Wi-Fi / Ethernet broadcast domain can reach port 7001.
+    The bearer token (256 bits, in ~/.giz/real/auth_token at mode 0600)
+    still gates reads and writes, so message content and contact list
+    are NOT exposed; but the daemon is fingerprintable (a hostile peer
+    on the LAN can confirm "this user runs Briar") and DoS'able (TCP
+    flood the listener and Briar stops accepting commands until the
+    LAN attacker stops). For clients on hostile networks (cafes, hotel
+    Wi-Fi, conference Wi-Fi) we surface this as a user-facing warning
+    rather than silently start.
+
+    Detection strategy: parse the kernel's listening-socket table via
+    lsof / ss / netstat. We never make outbound network calls (the
+    socket guard would block them anyway, and we want this probe to
+    run BEFORE the user is even logged in to their account). If no
+    tool is available we return None (cannot verify; do not warn).
+    """
+
+    binds = _list_listen_binds_for_pid(briar_pid, port)
+    if binds is None:  # could not determine
+        return None
+    if not binds:
+        return None  # not listening (yet); no warning
+
+    wildcard_markers = {"*", "0.0.0.0", "::", "[::]", "[*]", ""}  # noqa: S104  these are bind-string markers we *match against*, not addresses we bind
+    is_wildcard = any(b in wildcard_markers for b in binds)
+    is_loopback_only = all(
+        b == "127.0.0.1" or b == "::1" or b == "[::1]" for b in binds
+    )
+    if is_loopback_only:
+        return None  # the safe case
+    if is_wildcard:
+        return (
+            f"WARNING: briar-headless on port {port} is bound to a "
+            f"wildcard address ({sorted(set(binds))}). Any device on "
+            f"the same LAN can reach the API. Bearer-token auth "
+            f"(in ~/.giz/real/auth_token, mode 0600) still gates "
+            f"message access, but the daemon is fingerprintable and "
+            f"DoS'able from the network. RECOMMENDED: only run giz "
+            f"on a trusted network, OR add a system firewall rule "
+            f"blocking inbound TCP to port {port} from any non-"
+            f"loopback source. macOS: System Settings -> Network -> "
+            f"Firewall, or 'pfctl' rule. Linux: 'iptables -A INPUT "
+            f"-p tcp --dport {port} ! -i lo -j DROP'. See "
+            f"SECURITY.md, section 'LAN reachability'."
+        )
+    # Bound to specific non-loopback IPs (rare). Treat as warning.
+    return (
+        f"WARNING: briar-headless on port {port} is bound to non-"
+        f"loopback addresses ({sorted(set(binds))}). Same caveats "
+        f"as wildcard binding apply. See SECURITY.md."
+    )
+
+
+def _list_listen_binds_for_pid(pid: int, port: int) -> Optional[list[str]]:
+    """Return a list of bind hosts for `port` listened by `pid`.
+
+    Returns None when we cannot determine (no tool available, or tool
+    failed). Returns [] when the pid is not listening on `port` yet.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("lsof"):
+        try:
+            r = subprocess.run(
+                ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p", str(pid)],
+                capture_output=True, text=True, timeout=5.0,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return _parse_lsof_binds(r.stdout, port)
+
+    if shutil.which("ss"):
+        try:
+            r = subprocess.run(
+                ["ss", "-tlnp"],
+                capture_output=True, text=True, timeout=5.0,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return _parse_ss_binds(r.stdout, port, pid)
+
+    return None
+
+
+def _parse_lsof_binds(stdout: str, port: int) -> list[str]:
+    """Parse `lsof -nP -iTCP -sTCP:LISTEN` output. NAME column looks
+    like '127.0.0.1:7001 (LISTEN)' or '*:7001 (LISTEN)'."""
+    binds: list[str] = []
+    suffix = f":{port}"
+    for line in stdout.splitlines():
+        if "(LISTEN)" not in line:
+            continue
+        for tok in line.split():
+            if tok.endswith(suffix):
+                host = tok[: -len(suffix)]
+                # IPv6 lsof format: [::]:7001 -> host = "[::]"
+                binds.append(host)
+                break
+    return binds
+
+
+def _parse_ss_binds(stdout: str, port: int, pid: int) -> list[str]:
+    """Parse `ss -tlnp` output. Local Address column is host:port; pid
+    appears in the Process column as 'pid=<n>'."""
+    binds: list[str] = []
+    suffix = f":{port}"
+    pid_marker = f"pid={pid},"
+    for line in stdout.splitlines():
+        if pid_marker not in line and f"pid={pid})" not in line:
+            continue
+        for tok in line.split():
+            if tok.endswith(suffix):
+                host = tok[: -len(suffix)]
+                binds.append(host)
+                break
+    return binds
 
 
 def detect_unencrypted_swap() -> Optional[str]:

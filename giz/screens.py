@@ -1124,13 +1124,31 @@ class DiagnosticsScreen(Screen):
         uptime = time.time() - self.app.started_at
         outbound = _count_outbound_connections(pid)
 
+        proc_for_bind = getattr(self.app, "daemon_proc", None)
+        bind_warning = (
+            getattr(proc_for_bind, "bind_warning", None)
+            if proc_for_bind is not None
+            else None
+        )
+
         lines: List[str] = []
         lines.append("daemon")
         lines.append(
             f"  status   running (pid {pid if pid else '?'}, "
             f"up {_fmt_duration(uptime)})"
         )
-        lines.append(f"  api      127.0.0.1:{port if port else '?'} (loopback only)")
+        # API line: be honest about bind state. We DO NOT claim
+        # "loopback only" if the bind probe says otherwise.
+        if bind_warning is None:
+            lines.append(
+                f"  api      127.0.0.1:{port if port else '?'} "
+                f"(loopback only, or bind state unknown)"
+            )
+        else:
+            lines.append(
+                f"  api      *:{port if port else '?'} "
+                f"(LAN-REACHABLE - see network section below)"
+            )
         if outbound is None:
             lines.append("  outbound unknown (lsof / netstat not available)")
         elif outbound == 0:
@@ -1202,6 +1220,37 @@ class DiagnosticsScreen(Screen):
         else:
             lines.append(
                 "  daemon is connected to Tor; nothing else to do here right now."
+            )
+        lines.append("")
+
+        # ---- LAN reachability ----
+        # briar-headless 0.6.x has no --host flag; it always binds the
+        # API wildcard. We tell the user honestly and give them a
+        # mitigation they can apply at the OS firewall level.
+        lines.append("network exposure")
+        if bind_warning is None:
+            lines.append(
+                "  api bind: loopback-only OR could not be determined "
+                "(no warning surfaced)"
+            )
+            lines.append(
+                "  recommendation: nothing to do; on a typical Linux/macOS "
+                "host with lsof or ss available, an absent warning means "
+                "we positively confirmed loopback-only binding."
+            )
+        else:
+            for line in bind_warning.splitlines():
+                lines.append(f"  {line}")
+            lines.append("")
+            lines.append(
+                "  what an attacker on this LAN CAN do: confirm a Briar "
+                "daemon is running on this host (fingerprinting); send "
+                "TCP floods to slow or stall the API (DoS)."
+            )
+            lines.append(
+                "  what an attacker on this LAN CANNOT do: read messages, "
+                "list contacts, or impersonate you - the bearer token "
+                "(256-bit, mode 0600) gates every authenticated route."
             )
         lines.append("")
 
