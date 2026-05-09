@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-GIZ_VERSION="v0.1.14"
+GIZ_VERSION="v0.1.15"
 REPO="ulascim/giz"
 RELEASE_BASE="https://github.com/${REPO}/releases/download/v0.1.0"
 SOURCE_TARBALL="https://github.com/${REPO}/archive/refs/tags/${GIZ_VERSION}.tar.gz"
@@ -228,9 +228,34 @@ if [[ "${ACTUAL_SRC_SHA}" != "${SOURCE_SHA}" ]]; then
 fi
 green "source verified: ${ACTUAL_SRC_SHA}"
 
-tar -xzf "${TMP_DIR}/giz.tar.gz" -C "${TMP_DIR}"
-SRC_DIR="$(echo "${TMP_DIR}"/giz-*)"
-[[ -d "${SRC_DIR}" ]] || die "source tarball did not extract as expected"
+# Read the top-level directory name from the tarball itself so we never
+# rely on a shell glob (which silently expands to its literal pattern
+# when no file matches, and produced 'source tarball did not extract as
+# expected' on at least one user's macOS Tahoe install). 'tar -tzf'
+# lists archive contents without extracting; the first entry is always
+# the top-level dir for a GitHub tag tarball.
+TOP_LEVEL="$(tar -tzf "${TMP_DIR}/giz.tar.gz" 2>/dev/null | head -n1 | cut -d/ -f1)"
+if [[ -z "${TOP_LEVEL}" ]]; then
+    red "could not list contents of ${TMP_DIR}/giz.tar.gz"
+    red "this means the source tarball is corrupted or 'tar' is broken."
+    red "tar -tzf output:"
+    tar -tzf "${TMP_DIR}/giz.tar.gz" 2>&1 | sed 's/^/  /' | head -n 5
+    die "tar listing failed"
+fi
+
+if ! tar -xzf "${TMP_DIR}/giz.tar.gz" -C "${TMP_DIR}" 2>"${TMP_DIR}/tar.err"; then
+    red "tar extract failed. last 20 lines of stderr:"
+    tail -n 20 "${TMP_DIR}/tar.err" | sed 's/^/  /'
+    die "tar extract failed"
+fi
+
+SRC_DIR="${TMP_DIR}/${TOP_LEVEL}"
+if [[ ! -d "${SRC_DIR}" ]]; then
+    red "expected ${SRC_DIR} after extraction but it is missing."
+    red "TMP_DIR contents:"
+    ls -la "${TMP_DIR}" | sed 's/^/  /'
+    die "source tarball did not extract as expected"
+fi
 
 # ---- download JAR + verify --------------------------------------------------
 
