@@ -193,13 +193,27 @@ def register_shutdown_hook(hook: Callable[[], None]) -> None:
 
 
 def _acquire_lockfile(data_dir: Path) -> None:
-    """Refuse to start if another giz holds the lock for this data dir."""
+    """Refuse to start if another giz holds the lock for this data dir.
+
+    Idempotent: if THIS process already holds the lock for this data
+    dir, the second call is a no-op. Required because install_guards()
+    is documented as idempotent and may legitimately run twice (e.g.
+    re-entered after a controlled error).
+    """
     global _LOCKFILE
     data_dir.mkdir(parents=True, exist_ok=True)
     lock = data_dir / ".lock"
+    if _LOCKFILE is not None and _LOCKFILE == lock:
+        return
     if lock.exists():
         try:
             existing_pid = int(lock.read_text().strip().splitlines()[0])
+            if existing_pid == os.getpid():
+                # Stale lock from an earlier call inside this same process
+                # (no _LOCKFILE state because something cleared it). Reuse it.
+                _LOCKFILE = lock
+                register_shutdown_hook(_release_lockfile)
+                return
             os.kill(existing_pid, 0)
         except (ValueError, ProcessLookupError, PermissionError, IndexError):
             try:

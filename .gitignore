@@ -24,3 +24,6 @@ auth_token
 # OS
 .DS_Store
 Thumbs.db
+
+# Local-only test harness (not part of the release)
+tests/

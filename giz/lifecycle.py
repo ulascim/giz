@@ -162,8 +162,13 @@ def _find_java() -> Optional[str]:
 
 
 def find_free_port(preferred: int = 7001) -> int:
-    """Try the preferred port; fall back to any free local port."""
-    if _port_free(preferred):
+    """Try the preferred port; fall back to any free local port.
+
+    Port 0 is treated as "ask the OS"; we never return 0 because callers
+    pass the result back to subprocess.Popen / socket.connect where 0
+    is meaningless.
+    """
+    if preferred and preferred > 0 and _port_free(preferred):
         return preferred
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
