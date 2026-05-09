@@ -15,6 +15,16 @@ Two modes:
         - persist Argon2 hashes
         - exit cleanly
 
+    Persona spawn (giz new <name>):
+        - validate persona name
+        - compute a fresh data dir (~/.giz-<name> or LOCALAPPDATA\\giz-<name>)
+        - subprocess into 'giz --setup --data-dir ... --port ...'
+        - drop a 'giz-<name>' launcher onto PATH
+        - exit cleanly
+        Personas are NEVER listed inside any running giz process; the
+        only way to discover them is filesystem inspection. This keeps
+        the duress-wipe model intact.
+
 The install scripts call us with --setup once, then create a launcher
 that calls us without --setup for every subsequent run.
 """
@@ -25,6 +35,8 @@ import argparse
 import getpass
 import os
 import platform
+import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -47,13 +59,26 @@ def _data_dir_default() -> Path:
 
 
 def main(argv: Optional[list] = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+
+    # Subcommand routing happens BEFORE argparse and BEFORE any guards
+    # so 'giz new <name>' runs as a clean parent that just spawns a
+    # fresh giz --setup subprocess. No lockfile, no socket lockdown
+    # in this parent process; the child does its own.
+    positional = [a for a in raw if not a.startswith("-")]
+    if positional and positional[0] == "new":
+        if len(positional) < 2:
+            sys.stderr.write("usage: giz new <persona-name>\n")
+            return 19
+        return _new_persona(positional[1], _extract_flag(raw, "--jar"))
+
     parser = argparse.ArgumentParser(prog="giz", add_help=True)
     parser.add_argument("--data-dir", type=Path, default=_data_dir_default())
     parser.add_argument("--jar", type=Path, default=None)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--setup", action="store_true",
                         help="first-run interactive setup")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw)
 
     data_dir = args.data_dir.expanduser()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -275,6 +300,111 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
         client.close()
         proc.stop()
     return rc
+
+
+_PERSONA_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+_RESERVED_PERSONAS = {"new", "main", "default", "setup", "help"}
+
+
+def _extract_flag(argv: list, flag: str) -> Optional[Path]:
+    """Return the value of --flag <value> from argv, or None."""
+    for i, tok in enumerate(argv):
+        if tok == flag and i + 1 < len(argv):
+            return Path(argv[i + 1]).expanduser()
+        if tok.startswith(flag + "="):
+            return Path(tok[len(flag) + 1:]).expanduser()
+    return None
+
+
+def _persona_data_dir(persona: str) -> Path:
+    if platform.system() == "Windows":
+        local = os.environ.get("LOCALAPPDATA")
+        root = Path(local) if local else Path.home()
+        return root / f"giz-{persona}"
+    return Path.home() / f".giz-{persona}"
+
+
+def _new_persona(persona: str, jar: Optional[Path]) -> int:
+    """Create an additional persona alongside the primary account.
+
+    Personas are independent: separate keypairs, separate Briar databases,
+    separate duress passwords, separate launchers. No giz process ever
+    sees more than one persona at a time, so unlocking one does not
+    reveal the others' existence inside the app. Discovery requires
+    filesystem access, which is the same threat-model boundary as
+    everything else giz protects.
+    """
+    if not _PERSONA_RE.fullmatch(persona) or persona in _RESERVED_PERSONAS:
+        sys.stderr.write(
+            "persona must be lowercase letters/digits/dash, start with a "
+            "letter, max 32 chars, and not 'new'/'main'/'default'/'setup'/'help'.\n"
+        )
+        return 20
+
+    data_dir = _persona_data_dir(persona)
+    if (data_dir / duress.HASHES_FILENAME).exists():
+        sys.stderr.write(
+            f"persona '{persona}' already exists at {data_dir}.\n"
+            f"to recreate it, delete that directory and rerun.\n"
+        )
+        return 21
+
+    if jar is None or not jar.exists():
+        sys.stderr.write(
+            "internal error: no JAR path passed to 'giz new'. "
+            "are you running giz directly instead of via the launcher?\n"
+        )
+        return 22
+
+    port = lifecycle.find_free_port(7002)
+
+    print(f"creating persona '{persona}' at {data_dir} on port {port}")
+    rc = subprocess.call(
+        [sys.executable, "-m", "giz",
+         "--setup",
+         "--data-dir", str(data_dir),
+         "--port", str(port),
+         "--jar", str(jar)],
+    )
+    if rc != 0:
+        return rc
+
+    launcher = _write_persona_launcher(persona, data_dir, jar, port)
+    print(f"\nready. run '{launcher.name}' to log in as '{persona}'.")
+    return 0
+
+
+def _write_persona_launcher(
+    persona: str, data_dir: Path, jar: Path, port: int,
+) -> Path:
+    venv_giz = Path(sys.executable).parent / (
+        "giz.exe" if platform.system() == "Windows" else "giz"
+    )
+    if platform.system() == "Windows":
+        bin_dir = jar.parent / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        launcher = bin_dir / f"giz-{persona}.cmd"
+        launcher.write_text(
+            "@echo off\n"
+            f'"{venv_giz}" --data-dir "{data_dir}" --jar "{jar}" '
+            f'--port {port} %*\n',
+            encoding="ascii",
+        )
+    else:
+        bin_dir = Path.home() / ".local" / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        launcher = bin_dir / f"giz-{persona}"
+        launcher.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -e\n"
+            f'exec "{venv_giz}" \\\n'
+            f'    --data-dir "{data_dir}" \\\n'
+            f'    --jar "{jar}" \\\n'
+            f'    --port {port} \\\n'
+            f'    "$@"\n',
+        )
+        os.chmod(launcher, 0o755)
+    return launcher
 
 
 def _read_password_twice(label: str) -> Optional[bytearray]:
