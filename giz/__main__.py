@@ -295,7 +295,13 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
         sys.stderr.write(f"daemon never became ready: {exc}\n")
         return 15
 
-    app = GizApp(client, nickname="you")
+    app = GizApp(
+        client,
+        nickname="you",
+        daemon_pid=proc.pid,
+        daemon_port=free_port,
+        started_at=time.time(),
+    )
     sub = briar.EventSubscription(
         "127.0.0.1", free_port, token,
         app.handle_briar_event, app.handle_briar_disconnect,

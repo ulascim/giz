@@ -11,8 +11,9 @@ We never touch widgets from the WS thread directly.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from textual.app import App
 
@@ -34,13 +35,33 @@ class GizApp(App):
     CSS_PATH = CSS_PATH
     TITLE = "giz"
 
-    def __init__(self, client: BriarClient, nickname: str) -> None:
+    def __init__(
+        self,
+        client: BriarClient,
+        nickname: str,
+        *,
+        daemon_pid: Optional[int] = None,
+        daemon_port: Optional[int] = None,
+        started_at: Optional[float] = None,
+    ) -> None:
         super().__init__()
         self.client = client
         self.nickname = nickname
         self.contacts_cache: List[Contact] = []
         self.unread: Dict[int, int] = {}
         self._daemon_alive = True
+
+        # Diagnostics: surfaced by DiagnosticsScreen (key 'd' on Contacts).
+        # Tests do not pass these and just see None / 0 / empty, which the
+        # diagnostics screen renders as "unknown" rather than crashing.
+        self.daemon_pid: Optional[int] = daemon_pid
+        self.daemon_port: Optional[int] = daemon_port
+        self.started_at: float = started_at if started_at is not None else time.time()
+        # last (timestamp, state) per pendingContactId. Updated from
+        # PendingContactStateChangedEvent on the WS thread (forwarded
+        # to the main thread via call_from_thread). Concrete proof
+        # that briar is actively retrying the Tor handshake.
+        self.pending_state_log: Dict[str, Tuple[float, str]] = {}
 
     def on_mount(self) -> None:
         self.push_screen(ContactsScreen())
@@ -74,6 +95,17 @@ class GizApp(App):
             self._refresh_visible_chat_screen()
         elif "ContactAdded" in name or "ContactRemoved" in name:
             self._refresh_contacts_cache()
+            self._refresh_visible_contacts_screen()
+        elif "PendingContactStateChanged" in name:
+            # Briar emits this every time it tries (and fails or succeeds)
+            # to find the peer's Tor hidden-service descriptor. Used by
+            # DiagnosticsScreen as a heartbeat proving Tor is doing work.
+            pid = data.get("pendingContactId")
+            state = str(data.get("state") or "")
+            if pid:
+                self.pending_state_log[str(pid)] = (time.time(), state)
+            self._refresh_visible_contacts_screen()
+        elif "PendingContactAdded" in name or "PendingContactRemoved" in name:
             self._refresh_visible_contacts_screen()
 
     def _handle_disconnect(self, exc: Optional[Exception]) -> None:

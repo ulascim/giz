@@ -52,6 +52,7 @@ class ContactsScreen(Screen):
         Binding("s", "share_link", "share my link", show=True),
         Binding("x", "remove", "remove", show=True),
         Binding("r", "refresh", "refresh", show=True),
+        Binding("d", "diagnostics", "diagnostics", show=True),
         Binding("i", "info", "info", show=True),
         Binding("q", "quit", "quit", show=True),
         Binding("enter", "open_chat", "chat", show=False, priority=True),
@@ -77,7 +78,7 @@ class ContactsScreen(Screen):
         yield Static(id="empty")
         yield Static(
             "enter chat   a add   s share   x remove   "
-            "r refresh   i info   q quit",
+            "d diagnostics   r refresh   i info   q quit",
             id="hint",
         )
 
@@ -134,6 +135,9 @@ class ContactsScreen(Screen):
 
     def action_info(self) -> None:
         self.app.push_screen(InfoScreen())
+
+    def action_diagnostics(self) -> None:
+        self.app.push_screen(DiagnosticsScreen())
 
     def action_quit(self) -> None:
         self.app.exit(0)
@@ -241,9 +245,10 @@ def _pending_item(p: dict) -> ListItem:
     """A pending contact is one we added but Briar hasn't finished
     the Tor handshake for yet.
 
-    Briar's internal state field is one of:
+    Briar's actual PendingContactState enum (verified against
+    briar-headless OutputPendingContact.kt) is one of:
         'waiting_for_connection' | 'offline' | 'connecting'
-        | 'added' | 'failed'
+        | 'adding_contact' | 'failed'
 
     The first three all mean the same thing to a user ('still doing
     the Tor handshake'); they only differ in which phase of Briar's
@@ -252,15 +257,15 @@ def _pending_item(p: dict) -> ListItem:
     machines (one would say 'waiting' while the other said 'offline'
     even though neither was more connected than the other), so we
     collapse them into a single honest line. Only the terminal
-    'added' / 'failed' states get distinct messages, because those
-    actually mean something different to the user.
+    'adding_contact' / 'failed' states get distinct messages, because
+    those actually mean something different to the user.
     """
     pc = p.get("pendingContact", {}) if isinstance(p, dict) else {}
     alias = pc.get("alias") or "(no alias)"
     state = p.get("state", "pending") if isinstance(p, dict) else "pending"
     if state in ("waiting_for_connection", "offline", "connecting"):
         state_pretty = "pending: handshaking over Tor (15-20 min on first contact)"
-    elif state == "added":
+    elif state == "adding_contact":
         state_pretty = "pending: finalizing"
     elif state == "failed":
         state_pretty = "pending: failed; remove and retry"
@@ -860,3 +865,221 @@ class InfoScreen(Screen):
 
     def action_back(self) -> None:
         self.app.pop_screen()
+
+
+# ---------------------------------------------------------------- Diagnostics
+
+def _count_outbound_connections(pid: Optional[int]) -> Optional[int]:
+    """Count ESTABLISHED outbound TCP connections from the given pid.
+
+    These are Tor circuits. A briar-headless that is actively talking
+    to the Tor network typically holds 5-15 of them. Zero usually
+    means Tor has not bootstrapped yet (or never will, on a captive
+    network). We do not crash on platforms where the inspection tool
+    is missing; we just return None and let the UI say 'unknown'.
+    """
+    if pid is None:
+        return None
+    sys_name = platform.system()
+    try:
+        if sys_name in ("Darwin", "Linux"):
+            if not _shutil.which("lsof"):
+                return None
+            r = subprocess.run(
+                ["lsof", "-nP", "-p", str(pid), "-iTCP", "-sTCP:ESTABLISHED"],
+                check=False, timeout=4,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            )
+            if r.returncode != 0:
+                return 0
+            lines = [
+                ln for ln in r.stdout.decode("utf-8", "ignore").splitlines()
+                if ln and not ln.startswith("COMMAND")
+            ]
+            count = 0
+            for ln in lines:
+                # Filter out loopback (briar-headless's own API socket).
+                if "127.0.0.1" in ln or "[::1]" in ln:
+                    continue
+                count += 1
+            return count
+        if sys_name == "Windows":
+            if not _shutil.which("netstat"):
+                return None
+            r = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                check=False, timeout=4,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            )
+            if r.returncode != 0:
+                return None
+            count = 0
+            tag = str(pid)
+            for ln in r.stdout.decode("utf-8", "ignore").splitlines():
+                if "ESTABLISHED" not in ln:
+                    continue
+                if not ln.rstrip().endswith(tag):
+                    continue
+                if "127.0.0.1" in ln or "[::1]" in ln:
+                    continue
+                count += 1
+            return count
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return None
+
+
+def _fmt_duration(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    return f"{h}h {m}m"
+
+
+class DiagnosticsScreen(Screen):
+    """Live, read-only health view. Answers 'is Tor doing anything?'.
+
+    The cheapest, most direct signal that the Briar daemon is reaching
+    Tor is its count of ESTABLISHED outbound TCP connections - those
+    are Tor circuits to relays. We add the daemon uptime, the API
+    port (loopback only), and the per-pending-contact 'last state
+    change' age, which is how briar tells us 'I just retried this
+    handshake'. None of this leaves the loopback interface.
+    """
+
+    BINDINGS = [
+        Binding("escape", "back", "back", show=True),
+        Binding("d", "back", "back", show=False),
+        Binding("r", "refresh", "refresh", show=True),
+        Binding("q", "back", "back", show=False),
+    ]
+
+    app: "GizApp"  # type: ignore[assignment]
+
+    REFRESH_S = 2.0
+
+    def compose(self) -> ComposeResult:
+        yield Static("giz / diagnostics", id="title")
+        yield VerticalScroll(
+            Static("loading...", id="diag-body"),
+            id="diag-scroll",
+        )
+        yield Static(
+            "auto-refresh every 2s   r refresh now   esc back",
+            id="hint",
+        )
+
+    def on_mount(self) -> None:
+        self._redraw()
+        # Auto-refresh while open. Cancelled on screen pop because the
+        # interval is owned by this Screen instance.
+        self.set_interval(self.REFRESH_S, self._redraw)
+
+    def action_refresh(self) -> None:
+        self._redraw()
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+    def _redraw(self) -> None:
+        # NOTE: do NOT name this _render; that shadows Widget._render and
+        # makes Textual think the screen renders to None, crashing the
+        # compositor with 'NoneType has no attribute render_strips'.
+        try:
+            text = self._build_text()
+        except Exception as exc:
+            text = f"diagnostics error: {exc}"
+        try:
+            self.query_one("#diag-body", Static).update(text)
+        except Exception:
+            # Screen torn down between interval ticks; harmless.
+            pass
+
+    def _build_text(self) -> str:
+        pid = self.app.daemon_pid
+        port = self.app.daemon_port
+        uptime = time.time() - self.app.started_at
+        outbound = _count_outbound_connections(pid)
+
+        lines: List[str] = []
+        lines.append("daemon")
+        lines.append(
+            f"  status   running (pid {pid if pid else '?'}, "
+            f"up {_fmt_duration(uptime)})"
+        )
+        lines.append(f"  api      127.0.0.1:{port if port else '?'} (loopback only)")
+        if outbound is None:
+            lines.append("  outbound unknown (lsof / netstat not available)")
+        elif outbound == 0:
+            lines.append(
+                "  outbound 0 active TCP connections - Tor has NOT bootstrapped "
+                "yet, or your network is blocking it"
+            )
+        else:
+            lines.append(
+                f"  outbound {outbound} active TCP connections "
+                f"(these are Tor circuits to relays - good sign)"
+            )
+        lines.append("")
+
+        # contacts
+        try:
+            confirmed = self.app.client.list_contacts()
+        except Exception as exc:
+            confirmed = []
+            lines.append(f"contacts (could not list: {exc})")
+        else:
+            online = sum(1 for c in confirmed if c.connected)
+            lines.append("contacts")
+            lines.append(f"  confirmed   {len(confirmed)} ({online} online)")
+
+        try:
+            pending = self.app.client.list_pending_contacts()
+        except Exception:
+            pending = []
+        lines.append(f"  pending     {len(pending)}")
+        now = time.time()
+        for p in pending:
+            pc = p.get("pendingContact", {}) if isinstance(p, dict) else {}
+            alias = pc.get("alias") or "(no alias)"
+            ts_ms = int(pc.get("timestamp") or 0)
+            age = now - (ts_ms / 1000.0) if ts_ms else None
+            state = p.get("state", "?")
+            pid_str = str(pc.get("pendingContactId") or "")
+            log_entry = self.app.pending_state_log.get(pid_str)
+            if log_entry:
+                last_change_age = now - log_entry[0]
+                churn = f"last state change {_fmt_duration(last_change_age)} ago"
+            else:
+                churn = "no state change observed yet on this session"
+            age_str = _fmt_duration(age) if age else "?"
+            lines.append(f"    - {alias}: state={state}, age={age_str}, {churn}")
+        lines.append("")
+
+        lines.append("interpretation")
+        if outbound and outbound >= 3 and pending:
+            lines.append(
+                "  daemon is reaching Tor and at least one peer handshake is in "
+                "progress. just wait. first contact between two new accounts is "
+                "15-20 min; reconnects are seconds."
+            )
+        elif outbound == 0:
+            lines.append(
+                "  daemon has zero outbound connections. either Tor is still "
+                "starting (give it 60-120s after launch) or your network is "
+                "blocking outbound 443/9001/9030 to Tor relays."
+            )
+        elif outbound is None:
+            lines.append(
+                "  cannot inspect connections from this OS without lsof / "
+                "netstat. install one of those for richer diagnostics."
+            )
+        else:
+            lines.append(
+                "  daemon is connected to Tor; nothing else to do here right now."
+            )
+        return "\n".join(lines)

@@ -58,6 +58,13 @@ class HeadlessProcess:
     def port(self) -> int:
         return self._port
 
+    @property
+    def pid(self) -> Optional[int]:
+        """OS pid of the running daemon, or None if not started / dead."""
+        if self._proc is None:
+            return None
+        return self._proc.pid
+
     def start(self) -> None:
         java = _find_java()
         if java is None:

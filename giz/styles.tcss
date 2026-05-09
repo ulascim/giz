@@ -133,3 +133,18 @@ InfoScreen #info-body {
     height: auto;
     padding: 0;
 }
+
+/* ---------------- DiagnosticsScreen ---------------- */
+
+DiagnosticsScreen #diag-scroll {
+    height: 1fr;
+    background: $surface;
+    border: none;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+}
+
+DiagnosticsScreen #diag-body {
+    height: auto;
+    padding: 0;
+}

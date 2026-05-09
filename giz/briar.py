@@ -128,9 +128,17 @@ class BriarClient:
 
     def remove_pending(self, pending_id: str) -> None:
         """Cancel a pending contact (one we added but Tor handshake hasn't
-        finished). The id is the base32 'pendingContactId' field of the
-        objects returned by list_pending_contacts(), NOT a numeric id."""
-        self._delete(f"/v1/contacts/add/pending/{pending_id}")
+        finished).
+
+        Briar's headless API takes the id in the JSON BODY, not the path:
+            DELETE /v1/contacts/add/pending
+            { "pendingContactId": "<base64>" }
+        (verified against briar-headless ContactControllerImpl.kt)."""
+        self._request(
+            "DELETE",
+            "/v1/contacts/add/pending",
+            json_body={"pendingContactId": pending_id},
+        )
 
     def messages(self, contact_id: int) -> List[Message]:
         return [
