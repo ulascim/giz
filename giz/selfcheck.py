@@ -166,8 +166,10 @@ def _check_decoy_message() -> Tuple[bool, str]:
         from giz.__main__ import _no_account_message
     except Exception as exc:
         return False, str(exc)
-    expected = "no account found at /tmp/x. Run setup first.\n"
-    if _no_account_message(Path("/tmp/x")) != expected:
+    # Both lines are literal expected strings for an assertion message,
+    # not actual /tmp filesystem usage; B108 is a false positive here.
+    expected = "no account found at /tmp/x. Run setup first.\n"  # nosec B108
+    if _no_account_message(Path("/tmp/x")) != expected:  # nosec B108
         return False, "format string drifted"
     main_src = (Path(__file__).resolve().parent / "__main__.py").read_text()
     if main_src.count("_no_account_message(") < 3:

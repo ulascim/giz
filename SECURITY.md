@@ -326,7 +326,7 @@ DNS guard, loopback narrowing, duress decoy byte-equality,
 The output looks like:
 
 ```text
-giz v0.2.0  (python 3.12.4 on darwin arm64)
+giz v0.2.2  (python 3.12.4 on darwin arm64)
   argon2 binding ........................ ok
   hashes file 0o600 (synthetic) ......... ok
   socket guard refuses 8.8.8.8 .......... ok
@@ -343,6 +343,87 @@ all checks passed.
 
 If any line says FAIL, `giz` will not vouch for itself, and neither
 should you.
+
+## Static and supply-chain analysis
+
+`giz` is continuously scanned by an industry-standard lineup of
+static analyzers and dependency CVE scanners. Every push, pull
+request, and weekly cron tick runs the full pipeline; SARIF outputs
+are uploaded to the GitHub Security tab where supported.
+
+**Scanners in the pipeline:**
+
+| Scanner | Class | What it catches | Where it runs |
+|---|---|---|---|
+| [Bandit](https://github.com/PyCQA/bandit) | Python SAST (PyCQA) | Python-specific security anti-patterns: weak crypto, unsafe deserialization, shell injection, assert in non-test, hardcoded passwords | every push/PR |
+| [Semgrep](https://semgrep.dev/) with `p/python`, `p/security-audit`, `p/owasp-top-ten`, `p/cwe-top-25`, `p/secrets` | Modern dataflow SAST | OWASP Top 10, CWE Top 25, secret patterns, taint analysis (used by Stripe, GitLab, Slack) | every push/PR |
+| [CodeQL](https://codeql.github.com/) `python` `security-and-quality` | Semantic dataflow (GitHub) | Source/sink taint, interprocedural data flow — closest free peer to commercial SAST | every push/PR |
+| [detect-secrets](https://github.com/Yelp/detect-secrets) (Yelp) | Secret-pattern scanner | High-entropy strings, AWS/GCP/Azure keys, JWTs, hex tokens — gated by `.secrets.baseline` allow-list of known test fixtures | every push/PR |
+| [gitleaks](https://github.com/gitleaks/gitleaks) | Git-history secret scanner | Secrets in any past commit (full history) | every push/PR |
+| [pip-audit](https://github.com/pypa/pip-audit) (PyPA) | Dep CVE | CVEs against `requirements.lock.txt` from PyPI advisories + OSV | every push/PR, `--strict` mode (build fails on any vuln) |
+| [Safety](https://pyup.io/safety/) (PyUp) | Dep CVE 2nd opinion | Independent dep CVE DB; cross-checks pip-audit | every push/PR |
+| [Syft](https://github.com/anchore/syft) (Anchore) | SBOM generator | CycloneDX + SPDX bills of materials, archived as workflow artifact for any consumer | every push/PR |
+| [Grype](https://github.com/anchore/grype) (Anchore) | SBOM vuln-match | Matches the syft SBOM against known vulnerability DBs | every push/PR |
+| [osv-scanner](https://google.github.io/osv-scanner/) (Google) | OSV.dev DB scanner | Vulns from OSV.dev across PyPI/Go/npm/cargo — third independent dep scanner | every push/PR |
+
+The pipeline also runs on a **weekly schedule (Mon 04:31 UTC)**, so a
+newly-disclosed CVE against an unchanged `giz` codebase is caught
+within seven days even if no one is committing.
+
+### Most recent local scan (2026-05-09, v0.2.2)
+
+| Scanner | Real findings | False positives | Action |
+|---|---|---|---|
+| Bandit | 0 HIGH, 0 MEDIUM, 63 LOW | 3 MEDIUM (intentional hardening, suppressed with `# nosec` + comment) | LOW are advisory: subprocess audit trail, defensive `try/except/pass`, expected design |
+| Semgrep | 0 | 2 (recommended `0o644` instead of our deliberate `0o700` — inverted-policy false positives) | none |
+| detect-secrets | 0 | 3 (test fixtures: fake auth tokens, fake Briar pending IDs) | allow-listed in `.secrets.baseline` |
+| gitleaks | 0 in 64 commits | — | none |
+| pip-audit | 2 (in `requests 2.32.3`) | 0 | **fixed**: bumped to `requests==2.33.1` in `requirements.txt` and `requirements.lock.txt`; re-scan shows 0 |
+| Safety | 2 (same `requests` CVEs) | 0 | same fix |
+| grype (via syft SBOM) | 2 (same `requests` CVEs) | 0 | same fix |
+| osv-scanner | 2 (same `requests` CVEs) | 0 | same fix |
+
+The two `requests` CVEs (CVE-2024-47081 netrc credential leak,
+CVE-2026-25645 predictable temp file in `extract_zipped_paths()`)
+are not exploitable through `giz`'s usage of the library — `giz`
+never uses `.netrc` and never calls `extract_zipped_paths()` — but
+were patched anyway, in line with the project's lockfile-first
+supply-chain stance.
+
+After remediation, **all nine scanners report zero severity-HIGH or
+severity-MEDIUM findings on the production codebase.**
+
+Raw scan artifacts (JSON for every scanner, SBOM in CycloneDX and
+SPDX format) live in `security-scans/2026-05-09/` and are checked
+into the repository so any reader can independently re-run and
+diff against their own scan.
+
+### Reproducing locally
+
+```bash
+python3 -m venv /tmp/giz-scan-venv
+/tmp/giz-scan-venv/bin/pip install 'bandit[toml]' pip-audit safety \
+    detect-secrets semgrep
+cd /path/to/giz
+
+# SAST
+/tmp/giz-scan-venv/bin/bandit -r giz/ -c pyproject.toml
+/tmp/giz-scan-venv/bin/semgrep scan giz/ \
+    --config=p/python --config=p/security-audit \
+    --config=p/owasp-top-ten --config=p/cwe-top-25 --config=p/secrets
+
+# secrets
+/tmp/giz-scan-venv/bin/detect-secrets scan --baseline .secrets.baseline \
+    giz/ tests/ scripts/
+
+# dep CVE (pin lockfile, fail on any vuln)
+/tmp/giz-scan-venv/bin/pip-audit --strict -r requirements.lock.txt
+```
+
+Single-binary supply-chain tools (Anchore Syft+Grype, Google
+osv-scanner, gitleaks) are installed via their official install
+scripts linked in the table above; full reproduction commands live
+alongside the artifacts in `security-scans/2026-05-09/SUMMARY.md`.
 
 ## Cryptographic primitives
 

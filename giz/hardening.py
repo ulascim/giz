@@ -418,8 +418,9 @@ def _machine_lock_path() -> Path:
         return lock_dir / ".machine-lock"
     # POSIX: /tmp/.giz-<euid>.machine-lock. /tmp is shared across
     # users so we MUST namespace by uid; the trailing numeric uid
-    # is unspoofable for non-root processes.
-    return Path("/tmp") / f".giz-{os.geteuid()}.machine-lock"
+    # is unspoofable for non-root processes. _acquire_machine_lock_at
+    # guards the fd with O_NOFOLLOW + fstat ownership check.
+    return Path("/tmp") / f".giz-{os.geteuid()}.machine-lock"  # nosec B108
 
 
 def _acquire_machine_lock_at(lock_path: Path) -> None:
@@ -695,7 +696,9 @@ def detect_briar_bind_host(briar_pid: int, port: int) -> Optional[str]:
     if not binds:
         return None  # not listening (yet); no warning
 
-    wildcard_markers = {"*", "0.0.0.0", "::", "[::]", "[*]", ""}  # noqa: S104  these are bind-string markers we *match against*, not addresses we bind
+    # These are bind-string markers we *match against* in lsof/ss output
+    # to warn the user when briar bound there; we never bind here.
+    wildcard_markers = {"*", "0.0.0.0", "::", "[::]", "[*]", ""}  # noqa: S104  # nosec B104
     is_wildcard = any(b in wildcard_markers for b in binds)
     is_loopback_only = all(
         b == "127.0.0.1" or b == "::1" or b == "[::1]" for b in binds
