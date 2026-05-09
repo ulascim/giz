@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-GIZ_VERSION="v0.1.12"
+GIZ_VERSION="v0.1.13"
 REPO="ulascim/giz"
 RELEASE_BASE="https://github.com/${REPO}/releases/download/v0.1.0"
 SOURCE_TARBALL="https://github.com/${REPO}/archive/refs/tags/${GIZ_VERSION}.tar.gz"
@@ -233,7 +233,14 @@ if [[ "${OS_KIND}" == "Darwin" ]] && command -v tmutil >/dev/null 2>&1; then
     tmutil addexclusion "${DATA_DIR}" >/dev/null 2>&1 || true
 fi
 
-# ---- PATH (auto, idempotent) ------------------------------------------------
+# ---- PATH (auto, idempotent, defensive) -------------------------------------
+#
+# We write the PATH export to MULTIPLE rc files because it is impossible to
+# know in advance which one the user's interactive shell will read on next
+# launch. macOS Terminal opens login shells -> zsh reads .zprofile then
+# .zshrc; bash reads .bash_profile (or .profile). Linux non-login shells
+# read .bashrc. We append to all of them, guarded by an idempotent marker
+# so re-installs never duplicate the line.
 
 LAUNCHER_DIR="$(dirname "${LAUNCHER}")"
 PATH_LINE='export PATH="${HOME}/.local/bin:${PATH}"  # added by giz installer'
@@ -247,20 +254,36 @@ ensure_path_in_rc() {
     fi
 }
 
+PATH_NEEDED=0
 case ":${PATH}:" in
     *":${LAUNCHER_DIR}:"*) ;;
-    *)
-        # Append to the user's actual login shell rc, falling back sanely
-        # if the conventional file does not exist yet.
-        case "$(basename "${SHELL:-/bin/zsh}")" in
-            zsh)  ensure_path_in_rc "${HOME}/.zshrc" ;;
-            bash) ensure_path_in_rc "${HOME}/.bash_profile" ;;
-            fish) yellow "fish detected; add ~/.local/bin to fish_user_paths manually." ;;
-            *)    ensure_path_in_rc "${HOME}/.profile" ;;
-        esac
-        yellow "open a new terminal or run 'source ~/.zshrc' to pick up PATH changes."
-        ;;
+    *) PATH_NEEDED=1 ;;
 esac
+
+if [[ "${PATH_NEEDED}" == "1" ]]; then
+    case "$(basename "${SHELL:-/bin/zsh}")" in
+        zsh)
+            # zsh: login shell reads .zprofile, interactive reads .zshrc.
+            # Write to both - cheap and immune to user shell config quirks.
+            ensure_path_in_rc "${HOME}/.zshrc"
+            ensure_path_in_rc "${HOME}/.zprofile"
+            ;;
+        bash)
+            # bash: macOS login shell reads .bash_profile; many Linux setups
+            # source .bashrc from there. Write to all three to be safe.
+            ensure_path_in_rc "${HOME}/.bash_profile"
+            ensure_path_in_rc "${HOME}/.bashrc"
+            ensure_path_in_rc "${HOME}/.profile"
+            ;;
+        fish)
+            yellow "fish detected. add ~/.local/bin to fish_user_paths manually:"
+            yellow "    fish_add_path \"\$HOME/.local/bin\""
+            ;;
+        *)
+            ensure_path_in_rc "${HOME}/.profile"
+            ;;
+    esac
+fi
 
 # ---- run setup (only on a fresh install) -----------------------------------
 
@@ -269,21 +292,53 @@ esac
 # 'giz --setup' in that case: giz will refuse with exit 4, but more
 # importantly, asking for nickname/passwords here would imply we are about
 # to clobber the account. We never touch DATA_DIR contents in either path.
+SETUP_NEEDED=0
 if [[ -f "${DATA_DIR}/.gizhashes" ]]; then
     green "upgrade complete. existing account at ${DATA_DIR} preserved."
-    dim   "run 'giz' to log in with your existing password."
-    exit 0
-fi
-
-green "install complete. starting first-run setup..."
-echo
-
-# Redirect stdin from the controlling terminal explicitly so that
-# 'curl ... | bash' still allows interactive input during setup.
-# Without this, getpass and input() see EOF immediately and abort.
-if [[ -r /dev/tty ]]; then
-    exec "${LAUNCHER}" --setup </dev/tty
 else
-    yellow "warning: /dev/tty unavailable. Run \"giz --setup\" from a terminal to finish."
-    exit 0
+    SETUP_NEEDED=1
+    green "install complete. starting first-run setup..."
+    echo
+    # Redirect stdin from the controlling terminal explicitly so that
+    # 'curl ... | bash' still allows interactive input during setup.
+    # Without this, getpass and input() see EOF immediately and abort.
+    # We deliberately do NOT exec here so we can print the post-install
+    # banner with launch instructions after setup finishes.
+    if [[ -r /dev/tty ]]; then
+        if ! "${LAUNCHER}" --setup </dev/tty; then
+            red "first-run setup failed. you can re-run it later with:"
+            red "    ${LAUNCHER} --setup"
+            exit 1
+        fi
+    else
+        yellow "warning: /dev/tty unavailable. Run \"${LAUNCHER} --setup\" from a terminal to finish."
+        exit 0
+    fi
 fi
+
+# ---- final banner: how to actually start giz --------------------------------
+#
+# This is the bit users miss. Appending to .zshrc does NOT update the PATH of
+# the shell that ran 'curl ... | bash' - that shell already loaded its rc.
+# The user types 'giz', gets command-not-found, and thinks the install broke.
+# Spell out every fallback so this stops happening.
+
+echo
+bold "────────────────────────────────────────────────────────────"
+bold "  giz is installed. how to launch it:"
+echo
+green "  1)  open a NEW terminal window and type:"
+green "          giz"
+echo
+green "  2)  or, in THIS terminal, refresh PATH and start giz:"
+case "$(basename "${SHELL:-/bin/zsh}")" in
+    zsh)  green "          source ~/.zshrc && giz" ;;
+    bash) green "          source ~/.bash_profile && giz" ;;
+    fish) green "          fish_add_path \"\$HOME/.local/bin\" && giz" ;;
+    *)    green "          source ~/.profile && giz" ;;
+esac
+echo
+green "  3)  or run by absolute path (always works):"
+green "          ${LAUNCHER}"
+bold "────────────────────────────────────────────────────────────"
+echo

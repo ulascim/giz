@@ -18,7 +18,7 @@
 $ErrorActionPreference = 'Stop'
 $PSDefaultParameterValues['*:Encoding'] = 'utf8'
 
-$GIZ_VERSION = 'v0.1.12'
+$GIZ_VERSION = 'v0.1.13'
 $REPO        = 'ulascim/giz'
 $RELEASE_BASE   = "https://github.com/$REPO/releases/download/v0.1.0"
 $SOURCE_TARBALL = "https://github.com/$REPO/archive/refs/tags/$GIZ_VERSION.zip"
@@ -210,15 +210,15 @@ if (-not (Test-Path $venvGiz)) {
 "$venvGiz" --data-dir "$DATA_DIR" --jar "$INSTALL_ROOT\briar-headless.jar" %*
 "@ | Set-Content -Path $LAUNCHER -Encoding ASCII
 
-# ---- PATH hint --------------------------------------------------------------
+# ---- PATH (auto, idempotent) -----------------------------------------------
 
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($userPath -notlike "*$BIN_DIR*") {
-    Yellow "note: $BIN_DIR is not in your User PATH."
-    Yellow "      adding it now..."
     [Environment]::SetEnvironmentVariable('Path', "$userPath;$BIN_DIR", 'User')
+    # Update the running PowerShell's PATH so the post-install banner
+    # at the bottom can correctly say 'or just type giz now'.
     $env:Path = $env:Path + ";$BIN_DIR"
-    Yellow "      PATH updated. New PowerShell windows will have 'giz' available."
+    Dim "added $BIN_DIR to your User PATH."
 }
 
 # ---- run setup (only on a fresh install) -----------------------------------
@@ -228,13 +228,39 @@ if ($userPath -notlike "*$BIN_DIR*") {
 # 'giz --setup' in that case: giz will refuse with exit 4, but more
 # importantly, asking for nickname/passwords here would imply we are about
 # to clobber the account. We never touch DATA_DIR contents in either path.
+$SetupNeeded = $false
 if (Test-Path (Join-Path $DATA_DIR '.gizhashes')) {
     Green "upgrade complete. existing account at $DATA_DIR preserved."
-    Dim   "run 'giz' to log in with your existing password."
-    exit 0
+} else {
+    $SetupNeeded = $true
+    Green "install complete. starting first-run setup..."
+    Write-Host
+    & $LAUNCHER --setup
+    if ($LASTEXITCODE -ne 0) {
+        Red "first-run setup failed (exit $LASTEXITCODE). re-run later with:"
+        Red "    $LAUNCHER --setup"
+        exit 1
+    }
 }
 
-Green "install complete. starting first-run setup..."
-Write-Host
+# ---- final banner: how to actually start giz --------------------------------
+#
+# Same trap as on macOS: SetEnvironmentVariable updates the registry, but
+# already-running processes (including most terminal windows) keep their
+# old PATH until restart. Spell out every fallback so the user does not
+# get a confusing 'giz: command not found'.
 
-& $LAUNCHER --setup
+Write-Host
+Bold "------------------------------------------------------------"
+Bold "  giz is installed. how to launch it:"
+Write-Host
+Green "  1)  open a NEW PowerShell window and type:"
+Green "          giz"
+Write-Host
+Green "  2)  or, in THIS PowerShell, refresh PATH and start giz:"
+Green "          `$env:Path += ';$BIN_DIR'; giz"
+Write-Host
+Green "  3)  or run by absolute path (always works):"
+Green "          $LAUNCHER"
+Bold "------------------------------------------------------------"
+Write-Host
