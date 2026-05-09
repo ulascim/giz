@@ -18,7 +18,7 @@
 $ErrorActionPreference = 'Stop'
 $PSDefaultParameterValues['*:Encoding'] = 'utf8'
 
-$GIZ_VERSION = 'v0.1.6'
+$GIZ_VERSION = 'v0.1.7'
 $REPO        = 'ulascim/giz'
 $RELEASE_BASE   = "https://github.com/$REPO/releases/download/v0.1.0"
 $SOURCE_TARBALL = "https://github.com/$REPO/archive/refs/tags/$GIZ_VERSION.zip"
@@ -26,7 +26,7 @@ $SOURCE_TARBALL = "https://github.com/$REPO/archive/refs/tags/$GIZ_VERSION.zip"
 # SHA-256 of the source zip at the tag. install.ps1 aborts on
 # mismatch. Auditors verify with:
 #   (Get-FileHash giz-v0.1.1.zip -Algorithm SHA256).Hash
-$SOURCE_SHA = 'd728d987318388afe75951ed7003e20339b60a14299606bf7eab014caa6aeff3'
+$SOURCE_SHA = '8109e03107edd431d472e31492cab5a7c61f57dc1bed111c0ee52937a0ebe65f'
 
 # JAR is shipped with the v0.1.0 release (the binary did not change
 # between v0.1.0 and v0.1.1; only the wrapper did). Verified by SHA.
