@@ -61,24 +61,36 @@ def _data_dir_default() -> Path:
 def main(argv: Optional[list] = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
 
-    # Subcommand routing happens BEFORE argparse and BEFORE any guards
-    # so 'giz new <name>' runs as a clean parent that just spawns a
-    # fresh giz --setup subprocess. No lockfile, no socket lockdown
-    # in this parent process; the child does its own.
-    positional = [a for a in raw if not a.startswith("-")]
-    if positional and positional[0] == "new":
-        if len(positional) < 2:
-            sys.stderr.write("usage: giz new <persona-name>\n")
-            return 19
-        return _new_persona(positional[1], _extract_flag(raw, "--jar"))
-
+    # Build the argparse once and use parse_known_args so flag/value
+    # pairs (e.g. '--data-dir /path') are consumed properly. Whatever
+    # positional tokens remain are real subcommand args.
     parser = argparse.ArgumentParser(prog="giz", add_help=True)
     parser.add_argument("--data-dir", type=Path, default=_data_dir_default())
     parser.add_argument("--jar", type=Path, default=None)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--setup", action="store_true",
                         help="first-run interactive setup")
+    parser.add_argument(
+        "command", nargs="?", default=None,
+        help="subcommand: 'new' to create an additional persona",
+    )
+    parser.add_argument(
+        "command_args", nargs=argparse.REMAINDER,
+        help="arguments to the subcommand",
+    )
     args = parser.parse_args(raw)
+
+    # Subcommand routing. Runs BEFORE install_guards so the parent
+    # holds no lockfile and never touches the new persona's data dir;
+    # the child subprocess does its own hardening.
+    if args.command == "new":
+        if not args.command_args:
+            sys.stderr.write("usage: giz new <persona-name>\n")
+            return 19
+        return _new_persona(args.command_args[0], args.jar)
+    if args.command is not None:
+        sys.stderr.write(f"unknown command: {args.command}\n")
+        return 23
 
     data_dir = args.data_dir.expanduser()
     data_dir.mkdir(parents=True, exist_ok=True)
