@@ -14,13 +14,15 @@ and monitor it via:
     3. atexit / signal handlers (registered by hardening.py) that send
        SIGTERM, wait briefly, then SIGKILL.
 
-We intentionally do NOT redirect briar-headless logs to a file; they
-are inherited by the parent's stderr, which the TUI re-captures and
-discards above WARN. No persistent log file is ever created.
+We capture the daemon's stdout+stderr into an in-memory ring buffer
+(no file is ever written). Callers can ask for the tail of that buffer
+when something goes wrong, so the user sees the daemon's actual error
+instead of just "Connection refused".
 """
 
 from __future__ import annotations
 
+import collections
 import os
 import shutil
 import socket
@@ -29,7 +31,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Deque, List, Optional
 
 from . import hardening
 
@@ -52,6 +54,10 @@ class HeadlessProcess:
         self._password = password
         self._proc: Optional[subprocess.Popen] = None
         self._watchdog: Optional[threading.Thread] = None
+        self._stdout_pump: Optional[threading.Thread] = None
+        self._stderr_pump: Optional[threading.Thread] = None
+        self._log_buf: Deque[str] = collections.deque(maxlen=400)
+        self._log_lock = threading.Lock()
         self._died_callback = None  # type: ignore[var-annotated]
 
     @property
@@ -91,11 +97,14 @@ class HeadlessProcess:
             str(self._port),
         ]
 
+        self._record_log(f"giz: launching {' '.join(cmd)}")
+        self._record_log(f"giz: java is {java}")
+
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=env,
             cwd=str(self._data_dir),
             close_fds=True,
@@ -112,8 +121,44 @@ class HeadlessProcess:
         self._proc = proc
         hardening.register_shutdown_hook(self.stop)
 
+        self._stdout_pump = threading.Thread(
+            target=self._pump, args=(proc.stdout, "out"), daemon=True,
+        )
+        self._stderr_pump = threading.Thread(
+            target=self._pump, args=(proc.stderr, "err"), daemon=True,
+        )
+        self._stdout_pump.start()
+        self._stderr_pump.start()
+
         self._watchdog = threading.Thread(target=self._watch, daemon=True)
         self._watchdog.start()
+
+    def _pump(self, stream, tag: str) -> None:
+        if stream is None:
+            return
+        try:
+            for raw in iter(stream.readline, b""):
+                if not raw:
+                    break
+                line = raw.decode("utf-8", errors="replace").rstrip()
+                if line:
+                    self._record_log(f"{tag}: {line}")
+        except Exception as exc:  # noqa: BLE001
+            self._record_log(f"giz: pump({tag}) crashed: {exc}")
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    def _record_log(self, line: str) -> None:
+        with self._log_lock:
+            self._log_buf.append(line)
+
+    def tail_logs(self, n: int = 40) -> List[str]:
+        with self._log_lock:
+            buf = list(self._log_buf)
+        return buf[-n:]
 
     def stop(self, timeout_seconds: float = 5.0) -> None:
         proc = self._proc
@@ -152,17 +197,32 @@ class HeadlessProcess:
 
 
 def _find_java() -> Optional[str]:
-    java = shutil.which("java")
-    if java:
-        return java
-    candidates = (
+    """Locate a Java 17 binary, preferring exact 17 over whatever is on PATH.
+
+    Briar's headless JAR is built and tested against Java 17. Newer
+    Javas (21, 24) sometimes work and sometimes throw module-access
+    or reflection errors that look like a hung daemon. We therefore
+    prefer Homebrew's openjdk@17 (and the standard Linux package
+    paths) ahead of 'java' on PATH.
+    """
+    explicit_seventeen = (
         Path("/opt/homebrew/opt/openjdk@17/bin/java"),
         Path("/usr/local/opt/openjdk@17/bin/java"),
         Path("/Library/Java/JavaVirtualMachines/openjdk-17.jdk/Contents/Home/bin/java"),
         Path("/usr/lib/jvm/java-17-openjdk-amd64/bin/java"),
+        Path("/usr/lib/jvm/java-17-openjdk/bin/java"),
+        Path("/usr/lib/jvm/temurin-17-jdk-amd64/bin/java"),
+    )
+    for p in explicit_seventeen:
+        if p.exists():
+            return str(p)
+    java = shutil.which("java")
+    if java:
+        return java
+    fallback = (
         Path("/usr/lib/jvm/default-java/bin/java"),
     )
-    for p in candidates:
+    for p in fallback:
         if p.exists():
             return str(p)
     return None
@@ -219,14 +279,44 @@ def setup_first_run(
         "--port",
         str(port),
     ]
+    log_buf: Deque[str] = collections.deque(maxlen=400)
+    log_lock = threading.Lock()
+
+    def record(line: str) -> None:
+        with log_lock:
+            log_buf.append(line)
+
+    def pump(stream, tag: str) -> None:
+        if stream is None:
+            return
+        try:
+            for raw in iter(stream.readline, b""):
+                if not raw:
+                    break
+                txt = raw.decode("utf-8", errors="replace").rstrip()
+                if txt:
+                    record(f"{tag}: {txt}")
+        except Exception:
+            pass
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    record(f"giz: java is {java}")
+    record(f"giz: launching {' '.join(cmd)}")
+
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         cwd=str(data_dir),
         close_fds=True,
     )
+    threading.Thread(target=pump, args=(proc.stdout, "out"), daemon=True).start()
+    threading.Thread(target=pump, args=(proc.stderr, "err"), daemon=True).start()
     try:
         assert proc.stdin is not None
         # On first run briar-headless asks for nickname and password
@@ -244,16 +334,28 @@ def setup_first_run(
         proc.stdin.flush()
         proc.stdin.close()
 
-        deadline = time.monotonic() + 90
+        # First-run = brand-new identity + Tor bootstrap + descriptor
+        # publish; on slow networks the original 90s budget was tight.
+        deadline = time.monotonic() + 240
         while time.monotonic() < deadline:
             if (data_dir / "auth_token").exists() and _api_responding(port):
                 return
             if proc.poll() is not None:
+                with log_lock:
+                    tail = list(log_buf)[-40:]
+                detail = "\n".join(tail) if tail else "(no daemon output)"
                 raise HeadlessProcessError(
-                    f"briar-headless exited during first-run setup (rc={proc.returncode})"
+                    f"briar-headless exited during first-run setup "
+                    f"(rc={proc.returncode}). last lines:\n{detail}"
                 )
             time.sleep(0.5)
-        raise HeadlessProcessError("first-run setup timed out after 90s")
+        with log_lock:
+            tail = list(log_buf)[-40:]
+        detail = "\n".join(tail) if tail else "(no daemon output)"
+        raise HeadlessProcessError(
+            "first-run setup timed out after 240s. last lines from "
+            f"briar-headless:\n{detail}"
+        )
     finally:
         try:
             if proc.poll() is None:

@@ -263,10 +263,15 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
         return 12
 
     # Make this stage talk. Without progress output the user sees a black
-    # screen for up to ~180s after typing the password (Tor bootstrap +
-    # API ready) and concludes giz is broken. Print to STDOUT, flush, so
-    # the message survives even if a child process is buffering.
-    sys.stdout.write("\nstarting Briar daemon (Tor bootstrap can take 30-90s)...\n")
+    # screen for up to several minutes after typing the password (Tor
+    # bootstrap + hidden-service publish + API listener) and concludes
+    # giz is broken. Print to STDOUT, flush, so the message survives
+    # even if a child process is buffering.
+    sys.stdout.write(
+        "\nstarting Briar daemon...\n"
+        "  first run on this machine: 1-5 minutes (Tor bootstrap + hidden service publish)\n"
+        "  later runs: usually under 30 seconds\n"
+    )
     sys.stdout.flush()
 
     free_port = lifecycle.find_free_port(port)
@@ -281,15 +286,25 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
     hardening.zero_bytes(pw)
 
     try:
-        token = _wait_for_token(real_dir, status_writer=sys.stdout)
+        token = _wait_for_token(
+            real_dir, timeout_seconds=180.0, status_writer=sys.stdout, proc=proc,
+        )
     except TimeoutError as exc:
-        proc.stop()
         sys.stderr.write(
             f"\ndaemon did not produce auth token: {exc}\n"
-            f"this usually means Java did not start. quick checks:\n"
-            f"  java -version    # should show 17 or higher\n"
-            f"  ls {jar}\n"
+            f"this usually means Java did not start, the wrong Java\n"
+            f"version is on PATH, or Tor is being blocked.\n"
+            f"quick checks:\n"
+            f"  java -version    # need 17; 21/24 sometimes break Briar\n"
+            f"  ls {jar}\n\n"
         )
+        _dump_daemon_log(proc, sys.stderr)
+        proc.stop()
+        return 14
+    except _DaemonDiedError as exc:
+        sys.stderr.write(f"\ndaemon exited before producing auth token: {exc}\n\n")
+        _dump_daemon_log(proc, sys.stderr)
+        proc.stop()
         return 14
 
     # Re-tighten after briar-headless wrote auth_token. enforce_perms is
@@ -298,16 +313,22 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
     if perms_error:
         sys.stderr.write(f"warning: {perms_error}\n")
 
-    sys.stdout.write("daemon up. waiting for API to come online...\n")
+    sys.stdout.write("daemon up. waiting for API to come online (Tor circuit)...\n")
     sys.stdout.flush()
 
     client = briar.BriarClient("127.0.0.1", free_port, token)
     try:
-        client.wait_until_ready()
+        _wait_for_api(client, proc, timeout_seconds=300.0, status_writer=sys.stdout)
     except briar.BriarError as exc:
+        sys.stderr.write(f"\ndaemon never became ready: {exc}\n\n")
+        _dump_daemon_log(proc, sys.stderr)
         proc.stop()
         client.close()
-        sys.stderr.write(f"\ndaemon never became ready: {exc}\n")
+        return 15
+    except _DaemonDiedError as exc:
+        sys.stderr.write(f"\ndaemon exited while waiting for API: {exc}\n\n")
+        _dump_daemon_log(proc, sys.stderr)
+        client.close()
         return 15
 
     sys.stdout.write("ready. opening UI.\n")
@@ -467,18 +488,23 @@ def _prompt_password() -> Optional[bytearray]:
         return None
 
 
+class _DaemonDiedError(RuntimeError):
+    pass
+
+
 def _wait_for_token(
     real_dir: Path,
-    timeout_seconds: float = 90.0,
+    timeout_seconds: float = 180.0,
     *,
     status_writer=None,
+    proc: Optional[lifecycle.HeadlessProcess] = None,
 ) -> str:
     """Poll real_dir/auth_token until briar-headless writes it.
 
     A first-run Tor bootstrap can legitimately use most of the timeout,
-    which from the user's seat looks identical to a hang. We optionally
-    print '...still loading (Ns elapsed)' every 5 seconds so the user
-    knows giz is alive and waiting.
+    which from the user's seat looks identical to a hang. We print
+    '...still loading (Ns elapsed)' every 5 seconds so the user knows
+    giz is alive and waiting. We also abort early if the daemon exited.
     """
     deadline = time.monotonic() + timeout_seconds
     token_path = real_dir / "auth_token"
@@ -489,6 +515,8 @@ def _wait_for_token(
             tok = token_path.read_text().strip()
             if tok:
                 return tok
+        if proc is not None and not proc.is_alive():
+            raise _DaemonDiedError("briar-headless exited before opening API")
         if status_writer is not None and time.monotonic() >= next_status:
             elapsed = int(time.monotonic() - started)
             status_writer.write(f"  ...still loading ({elapsed}s elapsed)\n")
@@ -496,6 +524,67 @@ def _wait_for_token(
             next_status += 5.0
         time.sleep(0.5)
     raise TimeoutError(f"no auth token at {token_path}")
+
+
+def _wait_for_api(
+    client: "briar.BriarClient",
+    proc: lifecycle.HeadlessProcess,
+    timeout_seconds: float = 300.0,
+    *,
+    status_writer=None,
+) -> None:
+    """Block until the daemon's REST API answers, or raise.
+
+    First-run Tor circuit + hidden service publish can take 1-5 minutes
+    on the slow end (constrained networks, ISP-level Tor friction).
+    We poll every second, print progress every 10 seconds, and abort
+    immediately if the daemon dies.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    started = time.monotonic()
+    next_status = time.monotonic() + 10.0
+    last_err: Optional[Exception] = None
+    while time.monotonic() < deadline:
+        if not proc.is_alive():
+            raise _DaemonDiedError("briar-headless exited while we were waiting")
+        try:
+            client.list_contacts()
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+        if status_writer is not None and time.monotonic() >= next_status:
+            elapsed = int(time.monotonic() - started)
+            status_writer.write(
+                f"  ...still waiting for Tor / API ({elapsed}s elapsed)\n"
+            )
+            status_writer.flush()
+            next_status += 10.0
+        time.sleep(1.0)
+    raise briar.BriarError(
+        f"briar-headless did not become ready within {timeout_seconds:.0f}s"
+        + (f" (last error: {last_err})" if last_err else "")
+    )
+
+
+def _dump_daemon_log(
+    proc: lifecycle.HeadlessProcess,
+    writer,
+    n: int = 40,
+) -> None:
+    """Pretty-print the last n lines of daemon output for diagnosis."""
+    lines = proc.tail_logs(n)
+    if not lines:
+        writer.write(
+            "(no daemon output captured. java may not have started, or it\n"
+            " produced output too late to be flushed before we asked.)\n"
+        )
+        writer.flush()
+        return
+    writer.write("--- last lines from briar-headless ---\n")
+    for line in lines:
+        writer.write(f"  {line}\n")
+    writer.write("--- end ---\n")
+    writer.flush()
 
 
 if __name__ == "__main__":
