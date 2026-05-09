@@ -284,6 +284,11 @@ def _pending_item(p: dict) -> ListItem:
 class ChatScreen(Screen):
     BINDINGS = [
         Binding("escape", "back", "back", show=True),
+        # Pressing enter or i from anywhere on this screen jumps the
+        # cursor back to the message input. People who scrolled the
+        # log with arrows / mouse otherwise have no obvious way to
+        # get back to typing.
+        Binding("i", "focus_input", "type", show=False),
     ]
 
     app: "GizApp"  # type: ignore[assignment]
@@ -295,14 +300,38 @@ class ChatScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static(self._title(), id="title")
         yield RichLog(highlight=False, markup=False, wrap=True, id="log")
-        yield Input(id="msg")
-        yield Static("enter send   esc back", id="hint")
+        # Two widgets with dock:bottom + height:1 collapse onto the
+        # same row in Textual; with the original compose order the
+        # hint was painted directly on top of the message input,
+        # which is why the chat screen looked like a read-only log.
+        # Group them inside a single docked Vertical so each gets
+        # its own row.
+        with Vertical(id="chat-bottom"):
+            yield Input(
+                id="msg",
+                placeholder="type a message and press enter",
+            )
+            yield Static("enter send   esc back", id="hint")
 
     def on_mount(self) -> None:
         self._load_history()
         self.set_focus(self.query_one(Input))
         try:
             self.app.client.mark_read(self.contact.id)
+        except Exception:
+            pass
+
+    def on_screen_resume(self) -> None:
+        # If the user pushed and popped a sub-screen, focus may have
+        # been left on the log; aggressively put it back on the input.
+        try:
+            self.set_focus(self.query_one(Input))
+        except Exception:
+            pass
+
+    def action_focus_input(self) -> None:
+        try:
+            self.set_focus(self.query_one(Input))
         except Exception:
             pass
 

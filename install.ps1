@@ -18,7 +18,7 @@
 $ErrorActionPreference = 'Stop'
 $PSDefaultParameterValues['*:Encoding'] = 'utf8'
 
-$GIZ_VERSION = 'v0.1.16'
+$GIZ_VERSION = 'v0.1.17'
 $REPO        = 'ulascim/giz'
 $RELEASE_BASE   = "https://github.com/$REPO/releases/download/v0.1.0"
 $SOURCE_TARBALL = "https://github.com/$REPO/archive/refs/tags/$GIZ_VERSION.zip"

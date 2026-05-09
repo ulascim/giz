@@ -37,9 +37,29 @@ ContactsScreen ListView > ListItem {
     padding: 0 1;
 }
 
-ContactsScreen ListView > ListItem.--highlight {
-    background: $surface;
-    text-style: reverse;
+/* Loud highlight: a solid accent bar across the whole row.
+   We have to push the color all the way down to the inner Static
+   widgets because they declare 'background: transparent', which
+   would otherwise let the row's own background bleed through and
+   defeat any reverse/text-style trick. */
+ContactsScreen ListView > ListItem.--highlight,
+ContactsScreen ListView > ListItem.-highlight,
+ContactsScreen ListView:focus > ListItem.--highlight,
+ContactsScreen ListView:focus > ListItem.-highlight {
+    background: $accent;
+    color: $text;
+    text-style: bold;
+}
+
+ContactsScreen ListView > ListItem.--highlight .contact-row,
+ContactsScreen ListView > ListItem.-highlight .contact-row,
+ContactsScreen ListView > ListItem.--highlight .contact-name,
+ContactsScreen ListView > ListItem.-highlight .contact-name,
+ContactsScreen ListView > ListItem.--highlight .contact-status,
+ContactsScreen ListView > ListItem.-highlight .contact-status {
+    background: $accent;
+    color: $text;
+    text-style: bold;
 }
 
 .contact-row {
@@ -69,12 +89,40 @@ ChatScreen RichLog {
     scrollbar-size: 0 0;
 }
 
-ChatScreen Input {
+/* The chat screen docks a 2-row container at the bottom: one row
+   for the input, one row for the hint. The container is the only
+   thing that docks. */
+ChatScreen #chat-bottom {
     dock: bottom;
-    height: 1;
+    height: 2;
     background: $surface;
+}
+
+/* Make the input row visually distinct so the user can see where
+   to type. A flat single-line widget on the same background was
+   invisible. */
+ChatScreen #chat-bottom Input {
+    dock: initial;
+    height: 1;
+    background: $boost;
+    color: $text;
     border: none;
     padding: 0 1;
+}
+
+ChatScreen #chat-bottom Input:focus {
+    background: $boost;
+    color: $text;
+    text-style: bold;
+}
+
+/* Override the global #hint rule (dock:bottom) so the hint flows
+   inside the docked container instead of fighting it. */
+ChatScreen #chat-bottom #hint {
+    dock: initial;
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
 }
 
 /* ---------------- MyLinkScreen ---------------- */
