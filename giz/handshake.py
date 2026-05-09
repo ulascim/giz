@@ -21,13 +21,12 @@ from __future__ import annotations
 import hashlib
 import io
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 
 import segno
 from rich.align import Align
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import IntPrompt
 from rich.table import Table
 from rich.text import Text
 

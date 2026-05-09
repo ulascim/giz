@@ -27,7 +27,6 @@ import os
 import shutil
 import socket
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -46,8 +45,16 @@ class HeadlessProcess:
         jar_path: Path,
         data_dir: Path,
         port: int,
-        password: bytes,
+        password: bytearray,
     ) -> None:
+        # password MUST be a bytearray so the caller can zero it after
+        # we've handed it to the daemon. Refuse anything else loudly.
+        if not isinstance(password, bytearray):
+            raise TypeError(
+                "HeadlessProcess password must be a bytearray (so it can "
+                "be zeroed in place after use). Got "
+                f"{type(password).__name__}."
+            )
         self._jar_path = jar_path
         self._data_dir = data_dir
         self._port = port
@@ -111,7 +118,14 @@ class HeadlessProcess:
         )
         try:
             assert proc.stdin is not None
-            proc.stdin.write(bytes(self._password) + b"\n")
+            # Write directly from the bytearray (no `bytes(...)` copy)
+            # and append the newline as a separate small write, so the
+            # password never lives in an immutable Python bytes object
+            # we cannot zero. The BufferedWriter will copy our bytes
+            # into its own kernel-pipe buffer and that copy is short-
+            # lived and outside our reach regardless.
+            proc.stdin.write(self._password)
+            proc.stdin.write(b"\n")
             proc.stdin.flush()
             proc.stdin.close()
         except (BrokenPipeError, OSError) as exc:
@@ -143,7 +157,7 @@ class HeadlessProcess:
                 line = raw.decode("utf-8", errors="replace").rstrip()
                 if line:
                     self._record_log(f"{tag}: {line}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._record_log(f"giz: pump({tag}) crashed: {exc}")
         finally:
             try:
@@ -257,7 +271,7 @@ def setup_first_run(
     data_dir: Path,
     port: int,
     nickname: str,
-    password: bytes,
+    password: bytearray,
 ) -> None:
     """Run briar-headless once with --create-account-only-if-needed semantics.
 
@@ -265,7 +279,15 @@ def setup_first_run(
     using the provided nickname and the password we pipe in. We start
     it, wait for the API to come up, then stop it. After this, the
     DB and auth_token exist on disk and normal login works.
+
+    password MUST be a bytearray so the caller can zero it after
+    setup completes. We refuse anything else.
     """
+    if not isinstance(password, bytearray):
+        raise TypeError(
+            "setup_first_run password must be a bytearray. "
+            f"Got {type(password).__name__}."
+        )
     java = _find_java()
     if java is None:
         raise HeadlessProcessError("Java 17+ not found in PATH")
@@ -321,16 +343,16 @@ def setup_first_run(
         assert proc.stdin is not None
         # On first run briar-headless asks for nickname and password
         # twice; we provide both. On subsequent runs it asks for the
-        # password only. We send three lines and let the daemon discard
-        # what it does not need.
-        payload = (
-            f"{nickname}\n".encode()
-            + bytes(password)
-            + b"\n"
-            + bytes(password)
-            + b"\n"
-        )
-        proc.stdin.write(payload)
+        # password only. We stream the bytes directly - no concatenated
+        # immutable bytes object that would hold the password on the
+        # Python heap until GC. The BufferedWriter still copies into
+        # its own buffer, but that copy is outside our reach regardless,
+        # and is overwritten on close().
+        proc.stdin.write(f"{nickname}\n".encode("utf-8"))
+        proc.stdin.write(password)
+        proc.stdin.write(b"\n")
+        proc.stdin.write(password)
+        proc.stdin.write(b"\n")
         proc.stdin.flush()
         proc.stdin.close()
 

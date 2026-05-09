@@ -24,6 +24,7 @@ introduction protocols. Less surface, less to audit.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -74,7 +75,11 @@ class BriarClient:
         self._base = f"http://{host}:{port}"
         self._headers = {"Authorization": f"Bearer {token}"}
         self._session = requests.Session()
-        self._session.trust_env = False  # never use HTTP(S)_PROXY env
+        # never use HTTP(S)_PROXY env, never honor any system / user
+        # proxy config, never read .netrc credentials. Three layers
+        # because requests' precedence rules are surprising.
+        self._session.trust_env = False
+        self._session.proxies = {"http": None, "https": None}  # type: ignore[assignment]
 
     def close(self) -> None:
         try:
@@ -94,7 +99,7 @@ class BriarClient:
             try:
                 self.list_contacts()
                 return
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 last_err = exc
                 time.sleep(1.0)
         raise BriarError(
@@ -253,7 +258,17 @@ class EventSubscription:
         last_exc: Optional[Exception] = None
         while not self._stop.is_set() and retries < 5:
             try:
-                ws = websocket.create_connection(self._url, timeout=10)
+                # Explicitly pass no proxy. websocket-client's default
+                # is to consult HTTP_PROXY / HTTPS_PROXY env vars, which
+                # would route a loopback WS through a non-loopback
+                # proxy and trip the outbound socket guard.
+                ws = websocket.create_connection(
+                    self._url,
+                    timeout=10,
+                    http_proxy_host=None,
+                    http_proxy_port=None,
+                    http_proxy_auth=None,
+                )
                 try:
                     ws.send(self._token)
                     retries = 0
@@ -275,7 +290,7 @@ class EventSubscription:
                         ws.close()
                     except Exception:
                         pass
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 last_exc = exc
                 retries += 1
                 time.sleep(min(2 ** retries, 30))
@@ -287,8 +302,41 @@ class EventSubscription:
 
 
 def read_token(data_dir: Path) -> str:
-    """The token file is written by briar-headless on first launch."""
+    """The token file is written by briar-headless on first launch.
+
+    Read with O_NOFOLLOW (where supported), bounded to a small size,
+    and decoded as strict ASCII. A token that is unexpectedly long, a
+    symlink, or contains non-ASCII / whitespace inside the value is
+    treated as untrustworthy and refused. None of these would be
+    produced by a healthy briar-headless; any of them suggests
+    tampering with our data dir.
+    """
     path = data_dir / "auth_token"
     if not path.exists():
         raise BriarError(f"missing auth token at {path}")
-    return path.read_text().strip()
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(str(path), flags)
+    except OSError as exc:
+        raise BriarError(f"could not open auth token at {path}: {exc}") from None
+    try:
+        # Briar's tokens are ~64 chars of hex. 4 KiB is a generous
+        # upper bound that rules out a 1 GB symlink-to-/dev/zero attack.
+        raw = os.read(fd, 4096)
+    finally:
+        os.close(fd)
+    try:
+        tok = raw.decode("ascii", errors="strict").strip()
+    except UnicodeDecodeError:
+        raise BriarError(f"auth token at {path} is not ASCII") from None
+    if not tok:
+        raise BriarError(f"auth token at {path} is empty")
+    if not (8 <= len(tok) <= 256):
+        raise BriarError(
+            f"auth token at {path} has unexpected length {len(tok)}"
+        )
+    if any(ch.isspace() for ch in tok):
+        raise BriarError(f"auth token at {path} contains whitespace")
+    return tok

@@ -6,19 +6,28 @@ Goals (each enforced at startup, before any secret is read):
     2. Disable ptrace / process inspection so other local users cannot
        attach a debugger or read /proc/<pid>/mem.
     3. Discard all logging to disk; keep only stderr at WARN+ for
-       unrecoverable errors.
+       unrecoverable errors. Also neuter logging.basicConfig so a late
+       import cannot re-attach a file handler behind our back.
     4. Single-instance lockfile so two giz processes cannot race on the
        same encrypted Briar database.
     5. Best-effort signal handlers so SIGINT / SIGTERM / SIGHUP trigger
        an ordered shutdown with no orphan briar-headless subprocess.
     6. A simple memory-zero helper for password buffers (best-effort;
        Python's GC limits how complete this can be, documented honestly
-       in SECURITY.md).
-    7. Block outbound non-loopback socket connects from the giz Python
-       process. The wrapper has zero business talking to the public
-       network; only briar-headless does, and it runs as a separate
-       child process unaffected by this guard. This catches accidental
-       exfiltration from any imported library.
+       in SECURITY.md). Helper raises TypeError on non-bytearray to
+       catch programmer errors at audit time rather than silently
+       failing to zero an immutable bytes copy.
+    7. Block outbound non-loopback socket connects AND non-loopback
+       getaddrinfo() calls from the giz Python process. The wrapper has
+       zero business talking to the public network or even resolving
+       public hostnames; only briar-headless does, and it runs as a
+       separate child process unaffected by this guard. This catches
+       accidental exfiltration from any imported library, including
+       the DNS-leak variant where a name is resolved but never
+       connected to.
+    8. After briar-headless is up, the loopback whitelist is narrowed
+       further to (127.0.0.1, briar_port) only, so even loopback-bound
+       side-channels on other ports are refused.
 
 These guards do not protect against device malware. They only narrow the
 attack surface within the giz process itself.
@@ -37,12 +46,17 @@ import signal
 import socket
 import sys
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional, Set, Tuple
 
 _LOCKFILE: Optional[Path] = None
 _MACHINE_LOCKFILE: Optional[Path] = None
 _MACHINE_LOCK_FD: Optional[int] = None
 _SHUTDOWN_HOOKS: list[Callable[[], None]] = []
+# When None: any loopback address/port is allowed (default after
+# install_guards). When a set: only those exact (host, port) tuples
+# are allowed - even other loopback ports are refused. Narrowed by
+# restrict_loopback_to() once briar-headless's port is known.
+_ALLOWED_LOOPBACK_TARGETS: Optional[Set[Tuple[str, int]]] = None
 
 
 class MachineLockError(RuntimeError):
@@ -87,7 +101,13 @@ def _disable_ptrace() -> None:
 
 
 def _silence_logging() -> None:
-    """No log files. No DEBUG. Stderr-only, WARN+ only."""
+    """No log files. No DEBUG. Stderr-only, WARN+ only.
+
+    Also neuter logging.basicConfig() so a late-imported library that
+    calls it cannot re-attach a StreamHandler / FileHandler behind our
+    back. Same for logging.FileHandler so 'just write to a file' is
+    refused outright. logging.NullHandler is what we want everywhere.
+    """
     root = logging.getLogger()
     for handler in list(root.handlers):
         root.removeHandler(handler)
@@ -95,6 +115,39 @@ def _silence_logging() -> None:
     root.setLevel(logging.WARNING)
     for noisy in ("urllib3", "websocket", "requests"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    def _basic_config_noop(**kwargs):  # type: ignore[no-untyped-def]
+        return None
+    logging.basicConfig = _basic_config_noop  # type: ignore[assignment]
+
+    _real_file_handler_init = logging.FileHandler.__init__
+
+    def _file_handler_blocked(self, *a, **kw):  # type: ignore[no-untyped-def]
+        # Refuse: no log files, ever. We initialize as a bare Handler
+        # and stub out emit/flush/close at the instance level so
+        # *callers* never crash and no log content reaches disk.
+        # NB: only initializing the base Handler (self.lock,
+        # self.filters, ...) leaves self.stream unset; we therefore
+        # MUST override emit on the instance because FileHandler.emit
+        # would dereference self.stream and AttributeError.
+        logging.Handler.__init__(self)
+        # Instance-level no-ops shadow the FileHandler implementations.
+        self.emit = lambda record: None  # type: ignore[method-assign]
+        self.flush = lambda: None  # type: ignore[method-assign]
+        self.close = lambda: None  # type: ignore[method-assign]
+
+    logging.FileHandler.__init__ = _file_handler_blocked  # type: ignore[assignment]
+    # Also kill the rotating / timed file variants if the stdlib has them
+    # imported by anything yet.
+    for cls_name in ("RotatingFileHandler", "TimedRotatingFileHandler", "WatchedFileHandler"):
+        try:
+            handlers_mod = __import__("logging.handlers", fromlist=[cls_name])
+            cls = getattr(handlers_mod, cls_name, None)
+            if cls is not None:
+                cls.__init__ = _file_handler_blocked  # type: ignore[assignment]
+        except Exception:
+            pass
+    _ = _real_file_handler_init  # retained reference, intentionally unused
 
 
 _SOCKETS_LOCKED = False
@@ -108,14 +161,24 @@ class OutboundBlocked(OSError):
 
 
 def _block_outbound_sockets() -> None:
-    """Wrap socket.socket so connect()/connect_ex() refuse non-loopback peers.
+    """Wrap socket.socket and socket.getaddrinfo so all outbound network
+    activity stays on the loopback interface.
 
-    Loopback (127.0.0.0/8 and ::1) plus AF_UNIX are allowed; everything
-    else raises. This catches:
-        - bugs in this wrapper that accidentally hit the network
-        - exfiltration from a compromised dependency
-        - misconfigured proxies pulled in via env vars
-    briar-headless is a separate process and is NOT affected.
+    What's blocked:
+        - connect() / connect_ex() to anything other than a numeric
+          loopback address (127.0.0.0/8 or ::1)
+        - getaddrinfo() for non-numeric hosts and for numeric
+          non-loopback hosts (closes the DNS-leak variant where a
+          library resolves a hostname but never actually connects)
+        - once restrict_loopback_to() narrows the whitelist, even
+          loopback ports outside that whitelist are refused
+
+    What's allowed:
+        - AF_UNIX is unrestricted (used by some Python internals)
+        - getaddrinfo(None, ...) for binding our own listeners
+        - everything on the loopback interface, until restricted
+
+    briar-headless is a SEPARATE process and is NOT affected.
     """
     global _SOCKETS_LOCKED
     if _SOCKETS_LOCKED:
@@ -123,6 +186,22 @@ def _block_outbound_sockets() -> None:
 
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
+    real_getaddrinfo = socket.getaddrinfo
+
+    def _check_loopback_target(host: str, port: Optional[int]) -> None:
+        targets = _ALLOWED_LOOPBACK_TARGETS
+        if targets is None:
+            return
+        if port is None:
+            raise OutboundBlocked(
+                f"giz refused loopback connect() to {host} with no port "
+                f"(narrowed whitelist requires (host, port) match)"
+            )
+        if (host, int(port)) not in targets:
+            raise OutboundBlocked(
+                f"giz refused loopback connect() to {host}:{port}; "
+                f"only {sorted(targets)} are whitelisted in this run."
+            )
 
     def _check(sock: socket.socket, address) -> None:
         family = sock.family
@@ -135,6 +214,7 @@ def _block_outbound_sockets() -> None:
                 "giz refused a connect() with an unrecognized address shape"
             )
         host = address[0]
+        port = address[1] if len(address) >= 2 else None
         if not isinstance(host, str):
             raise OutboundBlocked(
                 f"giz refused a connect() to {address!r} (host not a string)"
@@ -151,6 +231,7 @@ def _block_outbound_sockets() -> None:
                 f"giz refused outbound connect() to {host}. "
                 f"The wrapper is loopback-only by design."
             )
+        _check_loopback_target(host, port if isinstance(port, int) else None)
 
     def _connect(self: socket.socket, address):  # type: ignore[no-untyped-def]
         _check(self, address)
@@ -160,9 +241,49 @@ def _block_outbound_sockets() -> None:
         _check(self, address)
         return real_connect_ex(self, address)
 
+    def _getaddrinfo(host, *args, **kwargs):  # type: ignore[no-untyped-def]
+        # host=None / "" is used by callers binding their OWN listeners;
+        # those never leave the box, so we let them through.
+        if host is None or host == "":
+            return real_getaddrinfo(host, *args, **kwargs)
+        if not isinstance(host, str):
+            raise OutboundBlocked(
+                f"giz refused getaddrinfo({host!r}) (host not a string)"
+            )
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            raise OutboundBlocked(
+                f"giz refused getaddrinfo for non-numeric host '{host}'. "
+                f"DNS lookups for public hostnames are not allowed in the "
+                f"wrapper; resolution would already leak the destination."
+            ) from None
+        if not ip.is_loopback:
+            raise OutboundBlocked(
+                f"giz refused getaddrinfo for non-loopback host '{host}'."
+            )
+        return real_getaddrinfo(host, *args, **kwargs)
+
     socket.socket.connect = _connect  # type: ignore[method-assign]
     socket.socket.connect_ex = _connect_ex  # type: ignore[method-assign]
+    socket.getaddrinfo = _getaddrinfo  # type: ignore[assignment]
     _SOCKETS_LOCKED = True
+
+
+def restrict_loopback_to(targets: Iterable[Tuple[str, int]]) -> None:
+    """Narrow the outbound-socket guard to a specific (host, port) set.
+
+    Before this call, any 127.x.y.z address is allowed. After this
+    call, only the supplied (host, port) tuples are allowed; everything
+    else, including OTHER loopback ports, is refused.
+
+    Called once per run, after we have learned the briar-headless
+    listening port, so that a malicious dependency cannot connect to
+    a sibling localhost listener (e.g. an exfil daemon planted by an
+    earlier compromise).
+    """
+    global _ALLOWED_LOOPBACK_TARGETS
+    _ALLOWED_LOOPBACK_TARGETS = {(str(h), int(p)) for h, p in targets}
 
 
 def _install_signal_handlers() -> None:
@@ -344,9 +465,19 @@ def zero_bytes(buf: bytearray) -> None:
     Python's garbage collector and string interning prevent a hard
     guarantee. Documented honestly in SECURITY.md. Useful for password
     buffers held in bytearray (which we do throughout giz).
+
+    Raises TypeError on non-bytearray input rather than silently
+    no-op'ing: silently failing to zero an immutable bytes copy is the
+    exact bug class this helper exists to prevent. We want it to
+    crash loud at audit time, not quietly leak the password.
     """
     if not isinstance(buf, bytearray):
-        return
+        raise TypeError(
+            f"zero_bytes requires bytearray (got {type(buf).__name__}); "
+            f"immutable bytes objects cannot be zeroed and must not be "
+            f"passed here. Re-check the caller: passwords must live in "
+            f"a bytearray for their entire lifetime."
+        )
     for i in range(len(buf)):
         buf[i] = 0
 
@@ -381,6 +512,16 @@ def enforce_perms(data_dir: Path) -> Optional[str]:
         (data_dir / "real" / "auth_token", 0o600, False),
     ]
     for path, mode, must_be_dir in targets:
+        # Refuse symlinks outright. follow_symlinks=False on chmod is
+        # not portable (Linux doesn't support it on regular files),
+        # so we just check first and bail. A symlink at one of these
+        # paths means something is wrong; we will not chmod the
+        # symlink target on the user's behalf.
+        if path.is_symlink():
+            return (
+                f"{path} is a symlink; refusing to chmod through it. "
+                f"Inspect the data dir; this should never happen."
+            )
         if not path.exists():
             continue
         if must_be_dir and not path.is_dir():
@@ -388,10 +529,19 @@ def enforce_perms(data_dir: Path) -> Optional[str]:
         if not must_be_dir and path.is_dir():
             return f"{path} unexpectedly is a directory"
         try:
-            os.chmod(path, mode)
+            # Prefer follow_symlinks=False where supported (some POSIX
+            # systems support it on dirs but not files). We already
+            # rejected symlinks above, so this is belt-and-braces.
+            try:
+                os.chmod(path, mode, follow_symlinks=False)
+            except (NotImplementedError, OSError):
+                os.chmod(path, mode)
         except OSError as exc:
             return f"could not chmod {path} to {mode:o}: {exc}"
-        st = path.stat()
+        try:
+            st = os.stat(path, follow_symlinks=False)
+        except OSError as exc:
+            return f"could not stat {path}: {exc}"
         actual = stat.S_IMODE(st.st_mode)
         if actual != mode:
             return (

@@ -6,8 +6,16 @@ Two modes:
         - read the on-disk hash file
         - prompt for password (silent, getpass)
         - if matches real    -> start briar-headless, launch TUI
-        - if matches duress  -> silent wipe, fake error, exit 0
-        - if matches neither -> retry with backoff
+        - if matches duress  -> silently destroy account, then emit the
+                                EXACT same output a fresh-installed-but-
+                                not-set-up giz emits: stderr "no account
+                                found at <path>. Run setup first.", exit
+                                code 9. The slow part of the wipe is
+                                handed to a detached child so the wall-
+                                clock cost matches the wrong-password
+                                path; an attacker timing the response
+                                cannot tell duress from a wrong guess.
+        - if matches neither -> "authentication failed", exit 12
 
     First-run setup (--setup):
         - prompt for nickname, real password, duress password
@@ -25,6 +33,15 @@ publish and its contacts stay 'pending' forever. Rather than ship
 a feature that breaks in confusing ways, giz allows exactly one
 account per machine. Use a different physical machine for a
 separate identity.
+
+Timing model for the auth prompt:
+    Every non-real-password outcome (wrong, duress, error) is padded
+    to AUTH_FLOOR_SECONDS of total wall-clock time before output is
+    written. The real-password path passes through immediately
+    (Argon2 dominates; we cannot hide that the daemon is starting).
+    AUTH_FLOOR_SECONDS is conservative (3.0s) - long enough to
+    swallow the synchronous part of a duress wipe so the duress
+    branch and the wrong-password branch are timing-equivalent.
 """
 
 from __future__ import annotations
@@ -45,6 +62,13 @@ from .app import GizApp
 DEFAULT_DATA_DIR = Path.home() / ".giz"
 DEFAULT_PORT = 7001
 
+# Wall-clock floor for every non-real-password auth outcome. Long
+# enough to cover the SYNCHRONOUS portion of secure_wipe (overwrite-
+# and-unlink of small files; the rmtree is detached). Tuned so a
+# wrong password and a duress password are indistinguishable from
+# wall-clock outside.
+AUTH_FLOOR_SECONDS = 3.0
+
 
 def _data_dir_default() -> Path:
     if platform.system() == "Windows":
@@ -63,7 +87,18 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--setup", action="store_true",
                         help="first-run interactive setup")
+    parser.add_argument(
+        "--self-check", action="store_true",
+        help="run runtime security self-checks against this install and exit",
+    )
     args = parser.parse_args(raw)
+
+    if args.self_check:
+        # Runs BEFORE any side-effecting startup so a user who is
+        # debugging a hardened-state issue can probe the install in
+        # isolation. Returns the failure count as the exit code.
+        from . import selfcheck
+        return selfcheck.run()
 
     data_dir = args.data_dir.expanduser()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -214,12 +249,40 @@ def _setup(data_dir: Path, jar: Path, port: int) -> int:
     return 0
 
 
+def _no_account_message(data_dir: Path) -> str:
+    """The single string both the genuine no-account path and the
+    duress-decoy path emit. Defined once so they cannot drift apart."""
+    return f"no account found at {data_dir}. Run setup first.\n"
+
+
+def _pad_until(start: float, floor_seconds: float) -> None:
+    """Sleep until at least floor_seconds have elapsed since start.
+
+    Used to make wrong-password, duress-password, and corrupt-state
+    auth outcomes wall-clock-indistinguishable. The real-password
+    success path passes through unchanged (Argon2 already dominates).
+    """
+    remaining = floor_seconds - (time.monotonic() - start)
+    if remaining > 0:
+        time.sleep(remaining)
+
+
 def _run(data_dir: Path, jar: Path, port: int) -> int:
-    hashes = duress.Hashes.load(data_dir)
-    if hashes is None:
+    try:
+        hashes = duress.Hashes.load(data_dir)
+    except duress.HashesCorruptError as exc:
+        # Distinguish from "no hash file": refuse to start so we do not
+        # invite the user to run --setup over a half-broken account.
         sys.stderr.write(
-            f"no account found at {data_dir}. Run setup first.\n"
+            f"refused to start: {exc}\n"
+            f"hint: this should never happen on a healthy machine. if you\n"
+            f"  cannot recover, you can re-set-up by deleting both\n"
+            f"  {data_dir}/{duress.HASHES_FILENAME} and\n"
+            f"  {data_dir}/{duress.REAL_DIR_NAME}/ - this DESTROYS your account.\n"
         )
+        return 19
+    if hashes is None:
+        sys.stderr.write(_no_account_message(data_dir))
         return 9
 
     real_dir = data_dir / duress.REAL_DIR_NAME
@@ -233,17 +296,37 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
     if pw is None:
         return 11
 
+    auth_started = time.monotonic()
     verdict = duress.check(hashes, bytes(pw))
 
     if verdict == duress.PasswordCheck.DURESS:
+        # Phase 1 of secure_wipe is synchronous (overwrite + unlink the
+        # small sensitive files). Phase 2-3 (snapshot purge + DB
+        # rmtree) are detached. After this returns, the hash file is
+        # gone; the next 'giz' invocation hits the genuine no-account
+        # branch above and produces byte-for-byte the same output.
         duress.secure_wipe(data_dir)
         hardening.zero_bytes(pw)
-        duress.print_fake_error_and_exit()
+        _pad_until(auth_started, AUTH_FLOOR_SECONDS)
+        sys.stderr.write(_no_account_message(data_dir))
+        return 9
 
     if verdict != duress.PasswordCheck.REAL:
         hardening.zero_bytes(pw)
-        time.sleep(2.0)
+        _pad_until(auth_started, AUTH_FLOOR_SECONDS)
         sys.stderr.write("authentication failed\n")
+        # If verify_password() failed-closed on something OTHER than a
+        # plain mismatch (corrupt argon2 install, hash-file mangled in
+        # an unusual way, etc.), surface a hint. We do NOT print this
+        # for a simple wrong password; that would let an attacker
+        # distinguish "valid hash, wrong guess" from "broken hash".
+        unusual = duress.last_verify_error()
+        if unusual:
+            sys.stderr.write(
+                f"hint: argon2 raised an unusual error ({unusual}). "
+                f"this is not a normal wrong-password state; check that "
+                f"the data dir is intact and argon2-cffi is healthy.\n"
+            )
         return 12
 
     # Make this stage talk. Without progress output the user sees a black
@@ -313,6 +396,13 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
     perms_error = hardening.enforce_perms(data_dir)
     if perms_error:
         sys.stderr.write(f"warning: {perms_error}\n")
+
+    # Narrow the outbound-socket guard now that we know the daemon's
+    # port. Before this call any 127.x.y.z address was allowed; from
+    # here on, even other loopback ports are refused. Closes the
+    # "malicious dependency talks to a sibling localhost listener"
+    # variant of the exfiltration story.
+    hardening.restrict_loopback_to([("127.0.0.1", free_port)])
 
     sys.stdout.write("daemon up. waiting for API to come online (Tor circuit)...\n")
     sys.stdout.flush()
@@ -389,6 +479,33 @@ class _DaemonDiedError(RuntimeError):
     pass
 
 
+def _read_token_strict(token_path: Path) -> str:
+    """Read auth_token with O_NOFOLLOW + bounded size + strict ASCII.
+
+    Refuses symlinks, non-ASCII content, whitespace inside the value,
+    empty or implausibly-sized payloads. None of these would occur in a
+    healthy briar-headless run; any of them suggests the data dir was
+    tampered with. We fail loud rather than feed a poisoned token to
+    every subsequent request.
+    """
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(str(token_path), flags)
+    try:
+        raw = os.read(fd, 4096)
+    finally:
+        os.close(fd)
+    tok = raw.decode("ascii", errors="strict").strip()
+    if not tok:
+        raise ValueError("empty auth_token")
+    if not (8 <= len(tok) <= 256):
+        raise ValueError(f"auth_token has unexpected length {len(tok)}")
+    if any(ch.isspace() for ch in tok):
+        raise ValueError("auth_token contains internal whitespace")
+    return tok
+
+
 def _wait_for_token(
     real_dir: Path,
     timeout_seconds: float = 180.0,
@@ -409,9 +526,11 @@ def _wait_for_token(
     started = time.monotonic()
     while time.monotonic() < deadline:
         if token_path.exists():
-            tok = token_path.read_text().strip()
-            if tok:
-                return tok
+            try:
+                return _read_token_strict(token_path)
+            except (OSError, ValueError, UnicodeDecodeError):
+                # File partially written by briar-headless; spin again.
+                pass
         if proc is not None and not proc.is_alive():
             raise _DaemonDiedError("briar-headless exited before opening API")
         if status_writer is not None and time.monotonic() >= next_status:
@@ -447,7 +566,7 @@ def _wait_for_api(
         try:
             client.list_contacts()
             return
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_err = exc
         if status_writer is not None and time.monotonic() >= next_status:
             elapsed = int(time.monotonic() - started)

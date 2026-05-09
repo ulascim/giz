@@ -27,3 +27,24 @@ Thumbs.db
 
 # Local-only test harness (not part of the release)
 tests/
+
+# Local-only assurance-ladder infrastructure. The public surface is
+# `giz --self-check` (and the runtime guards it exercises); the
+# internal toolchain that produces those guarantees is intentionally
+# kept private:
+#   * scripts/redteam/   isolated + live attacker scenarios
+#   * .github/           CI workflows that run the full ladder
+#   * Makefile           developer convenience targets
+#   * THREAT_MODEL.md    cross-references the local test files
+#   * dev-requirements.txt  pytest / hypothesis / ruff / bandit / pyright
+#
+# This is a deliberate decision: the public repo ships the runtime
+# code and a runnable self-check; the maintainer's lab keeps the
+# adversarial toolchain off the index page.
+scripts/
+.github/
+Makefile
+THREAT_MODEL.md
+dev-requirements.txt
+pytest.ini
+ruff.toml

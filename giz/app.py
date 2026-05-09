@@ -19,10 +19,8 @@ from textual.app import App
 
 from .briar import BriarClient, Contact
 from .screens import (
-    AddContactScreen,
     ChatScreen,
     ContactsScreen,
-    MyLinkScreen,
 )
 
 
@@ -103,7 +101,15 @@ class GizApp(App):
         # Be tolerant. Without this, PrivateMessageReceivedEvent
         # arrived but data ended up pointing at the OUTER object,
         # so contactId was None and the chat never refreshed live.
-        name = event.get("name") or event.get("type") or ""
+        # Coerce to a real string so the substring tests below never
+        # explode on a malformed event whose 'name' is bytes / int /
+        # arbitrary object. Hypothesis caught this; never trust the
+        # daemon's payload shape.
+        raw_name = event.get("name") or event.get("type") or ""
+        try:
+            name = str(raw_name) if not isinstance(raw_name, str) else raw_name
+        except Exception:
+            name = ""
         data: Dict[str, Any] = {}
         for key in ("data", "event"):
             v = event.get(key)

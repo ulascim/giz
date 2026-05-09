@@ -17,6 +17,7 @@ Keyboard model:
 from __future__ import annotations
 
 import platform
+import re
 import shutil as _shutil
 import subprocess
 import time
@@ -1039,6 +1040,25 @@ def _fmt_duration(seconds: float) -> str:
     return f"{h}h {m}m"
 
 
+# Anything looking like a long random opaque token (auth_token, briar://
+# link, Ed25519 key blob) is replaced with a placeholder before display.
+# briar-headless is not known to log such values today, but this is a
+# cheap belt-and-braces step in case a future Briar build does.
+_TOKEN_SHAPED = re.compile(r"[A-Za-z0-9+/_=-]{32,}")
+
+
+def _scrub_log_line(line: str) -> str:
+    """Replace long random-looking blobs in a daemon log line.
+
+    Used by DiagnosticsScreen so a hypothetical future Briar build that
+    logs the auth_token, a private key, or a contact link cannot leak
+    that value through the diagnostics panel. False positives (legitimate
+    long IDs) get redacted too; the user keeps the rest of the line for
+    debugging.
+    """
+    return _TOKEN_SHAPED.sub("<redacted>", line)
+
+
 class DiagnosticsScreen(Screen):
     """Live, read-only health view. Answers 'is Tor doing anything?'.
 
@@ -1218,5 +1238,5 @@ class DiagnosticsScreen(Screen):
             for ll in log_lines:
                 # truncate insanely long lines so the diag panel stays
                 # readable; full log is still in memory if we ever need it.
-                lines.append(f"  {ll[:200]}")
+                lines.append(f"  {_scrub_log_line(ll)[:200]}")
         return "\n".join(lines)

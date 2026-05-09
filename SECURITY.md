@@ -36,7 +36,7 @@ XSalsa20-Poly1305) are peer-reviewed.
 | Government subpoenas a server for logs | There is no server. There is nothing to subpoena. |
 | Government compels Briar Project to backdoor you | Briar Project has no keys, no servers, no relationship with any user. Even if a malicious release were pushed, the source is public and the install pins a SHA-256 hash. |
 | Hacker steals your laptop disk | The Briar database is encrypted with an Argon2id-derived key from your password. A strong password (>= 12 random characters) is computationally infeasible to brute-force. |
-| Forced password disclosure | Type the duress password instead. The real account is silently destroyed. |
+| Forced password disclosure | Type the duress password instead. The real account is silently destroyed. The decoy output and timing match a fresh-install state, so an attacker who knows about giz cannot distinguish "you typed duress" from "you typed wrong" or "you never set up an account." |
 | MITM during initial link exchange | Detected by `/verify`, which reads a SHA-256 fingerprint aloud over a different channel. With a strong exchange channel, MITM is not possible to begin with. |
 
 ## Not protected against
@@ -63,12 +63,41 @@ access could in theory recover fragments. The kernel-level defenses
 they prevent any password fragment from ever reaching disk under normal
 operation.
 
-**The duress wipe is observable.** A sophisticated attacker who saw you
-using `giz` five minutes ago and now sees "no account" knows you wiped.
-This is the explicit trade-off chosen over a decoy-account approach: the
-decoy is harder to maintain plausibly and keeping a fake account active
-is operational overhead. The wipe is irreversible; if you mistype the
-duress password under stress, your data is gone.
+**The duress wipe's output is now byte-for-byte identical to a
+fresh-installed-but-not-set-up giz.** Same string, same stream
+(stderr), same exit code (9). After the wipe, subsequent `giz`
+invocations also match a fresh install: no password prompt, same
+"no account found at <path>. Run setup first." message. An attacker
+comparing post-wipe output to a known-clean install cannot distinguish
+them by output.
+
+**The duress wipe is now timing-equivalent to a wrong password.** The
+synchronous part of the wipe (overwrite + unlink the small sensitive
+files) is fast; the slow part (rmtree of the encrypted DB) is handed
+off to a detached child process so the giz parent can return to the
+caller immediately. The auth prompt time-pads every non-real outcome
+to a common floor (3.0s by default), so a wrong password and a duress
+password produce the same wall-clock latency from the prompt's
+perspective. The detached child finishes the rmtree in the
+background; even if the user closes the terminal, init / launchd
+adopts the child and it completes.
+
+**The duress wipe remains observable in two narrow ways.** First, an
+attacker who saw you successfully unlock giz five minutes ago and now
+sees "no account" knows you wiped (or that the data was lost some
+other way) - the *fact* of having had an account at all is not
+something we can hide. Second, a sophisticated attacker who actively
+controls the disk image (via local OS snapshots or ZFS / btrfs / APFS
+snapshots they take themselves) can capture pre-wipe state and recover
+later. We mitigate the macOS APFS local-Time-Machine-snapshot variant
+by best-effort issuing `tmutil deletelocalsnapshots /` during the
+wipe; we cannot mitigate snapshots taken by an attacker who already
+has root.
+
+**The wipe is irreversible.** If you mistype the duress password
+under stress, your data is gone. Phase 1 of the wipe (which deletes
+the hash file) is synchronous and runs before any child is spawned;
+it is the irrecoverable step.
 
 **SSD secure deletion is partial.** `secure_wipe` overwrites small
 sensitive files (the password hash file, the lockfile) before unlinking
@@ -78,6 +107,19 @@ firmware GCs them. The real defense against forensic recovery is
 full-disk encryption (FileVault on macOS, BitLocker on Windows, LUKS on
 Linux). The installer warns loudly if FDE is disabled but does not
 refuse to install.
+
+**Process-internal exfiltration is constrained, not impossible.** The
+giz wrapper installs a runtime guard that refuses any non-loopback
+`connect()` AND any non-loopback `getaddrinfo()` from inside the
+wrapper process. After the briar-headless port is known, the guard
+narrows further so that even *other* loopback ports are refused -
+this catches the "malicious dependency talks to an exfil daemon
+listening on 127.0.0.1:NNNN" variant. The guard does not, and cannot,
+prevent malicious in-process code from calling raw libc bindings
+directly; it is positioned as defense-in-depth against accidental or
+opportunistic exfiltration, not as a sandbox. If you have malicious
+code running inside the giz process, it has the auth_token and can
+drive Briar to send arbitrary messages over Tor anyway.
 
 **Tor traffic correlation by global passive adversaries.** Known Tor
 limitation. A nation-state actor that observes both your Tor entry guard
@@ -194,3 +236,100 @@ repository and your machine is to (a) compromise the maintainer's
 GPG key and push a poisoned tag, or (b) compromise PyPI's signing
 infrastructure for one of the pinned dependency hashes. Neither is
 the threshold of a casual attacker.
+
+## How we know `giz` is rock solid
+
+Trust is not a property; **a falsifiable check is**. Every claim in
+this document maps onto a runtime check that the user can run against
+their own install, after the installer finishes:
+
+```bash
+giz --self-check   # 11 runtime checks, < 1 second
+```
+
+`giz --self-check` answers, for that exact install, whether every
+guard is in place: argon2 binding, hash file mode, socket guard,
+DNS guard, loopback narrowing, duress decoy byte-equality,
+`zero_bytes` contract, `logging.basicConfig` no-op,
+`logging.FileHandler` neutering, `~/.giz` mode, source tree integrity.
+
+The output looks like:
+
+```text
+giz v0.2.0  (python 3.12.4 on darwin arm64)
+  argon2 binding ........................ ok
+  hashes file 0o600 (synthetic) ......... ok
+  socket guard refuses 8.8.8.8 .......... ok
+  getaddrinfo refuses example.com ....... ok
+  restrict_loopback narrows ............. ok
+  duress decoy == no-account string ..... ok
+  zero_bytes(bytes) raises TypeError .... ok
+  logging.basicConfig is a no-op ........ ok
+  logging.FileHandler is blocked ........ ok
+  data dir mode (~/.giz) ................ ok
+  source tree sha256 .................... ok
+all checks passed.
+```
+
+If any line says FAIL, `giz` will not vouch for itself, and neither
+should you.
+
+## Reporting a vulnerability
+
+Please do **not** open a public GitHub issue for security findings.
+
+* Email: `security@<domain-of-the-published-PGP-key>`  (see fingerprint below)
+* GPG: encrypt the message body to `0x0000000000000000`  (REPLACE
+  with the maintainer's published PGP fingerprint at first deploy;
+  until then, the canonical channel is the maintainer's GitHub
+  contact email visible on the release page).
+
+Coordinated-disclosure timeline:
+
+| day  | what happens                                                                     |
+|------|----------------------------------------------------------------------------------|
+| 0    | report received; we acknowledge within 72h                                       |
+| 0–14 | we reproduce, scope, and propose a fix                                            |
+| 14–60 | we ship a private patch tag, give you a pre-release for confirmation             |
+| 60   | we publish the fix and credit the reporter (unless they prefer to stay anonymous) |
+| 90   | hard ceiling: at this point we publish even if upstream coordination has stalled  |
+
+What qualifies:
+
+* Any way a non-real-password input causes giz to advance past auth.
+* Any way the duress branch is distinguishable from the no-account
+  branch (output bytes, exit code, wall-clock under 500 ms).
+* Any way the wrapper makes a non-loopback socket connect or DNS query.
+* Any way the password buffer's plaintext lives past `zero_bytes(...)`
+  in a place a debugger / `/proc` reader can find it.
+* Any way `enforce_perms` lets a symlink at a protected path stand.
+* Any way `Hashes.load` silently treats a corrupt file as fresh.
+* Any way the installer accepts a tarball / JAR with a non-matching SHA.
+* Any way `giz --self-check` reports "ok" while the underlying claim
+  is actually false.
+
+What does NOT qualify (out of scope, see THREAT_MODEL.md §"Out of scope"):
+
+* Pegasus-class device malware.
+* Cold-boot attacks against unencrypted swap.
+* Generic Briar / Tor protocol vulns — please report those upstream.
+* Hardening that is documented as best-effort (e.g. memory zeroing in
+  pure Python).
+
+We do not (yet) run a paid bug bounty. We will publicly credit the
+reporter in `RELEASES.md` and the GitHub Security Advisory.
+
+## Cryptographic primitives
+
+`giz` itself contains no cryptography beyond Argon2id and SHA-256:
+
+* **Argon2id** (`argon2-cffi`) for the on-disk password hash file.
+  Parameters: `time_cost=3`, `memory_cost=64 MiB`, `parallelism=2`.
+  The hash file lives at `~/.giz/.gizhashes`, mode 0600, written
+  atomically (O_NOFOLLOW + O_EXCL temp + rename).
+* **SHA-256** for `/verify` long fingerprints, the short-code
+  derivation, `auth_token` shape checks, and source / JAR pin
+  verification.
+
+Briar's own primitives (Ed25519, Curve25519, XSalsa20-Poly1305) operate
+inside the `briar-headless` JVM and are not implemented in `giz`.

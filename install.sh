@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-GIZ_VERSION="v0.1.20"
+GIZ_VERSION="v0.2.0"
 REPO="ulascim/giz"
 RELEASE_BASE="https://github.com/${REPO}/releases/download/v0.1.0"
 SOURCE_TARBALL="https://github.com/${REPO}/archive/refs/tags/${GIZ_VERSION}.tar.gz"
@@ -31,9 +31,10 @@ SOURCE_TARBALL="https://github.com/${REPO}/archive/refs/tags/${GIZ_VERSION}.tar.
 # binding artifact integrity check for everything inside the source
 # archive (giz/*.py, requirements.lock.txt, pyproject.toml, etc.).
 # Auditors verify by:
-#   curl -fsSL https://github.com/ulascim/giz/archive/refs/tags/v0.1.1.tar.gz \
+#   curl -fsSL https://github.com/ulascim/giz/archive/refs/tags/v0.2.0.tar.gz \
 #     | shasum -a 256
-SOURCE_SHA="6f19cd087b676deaa5e84657af4fa0dc719a5715be30678c3a295330b956f6e7"
+# NOTE: the line below MUST be regenerated when the v0.2.0 tag is cut.
+SOURCE_SHA="REGENERATE_AT_TAG_TIME"
 
 # JAR is shipped with the v0.1.0 release (the binary did not change
 # between v0.1.0 and v0.1.1; only the wrapper did). Verified by SHA.
