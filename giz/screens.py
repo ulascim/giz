@@ -9,12 +9,16 @@ Pure text. No mouse. No buttons. No colored boxes. Each screen is:
 Keyboard model:
     Contacts:  Up/Down -> select   Enter -> chat   a -> add   r -> refresh   q -> quit
     Chat:      Enter on input -> send   Esc -> back
-    Exchange:  t/q/c toggle your-link format   Tab -> next field
-               Enter on link -> jump to alias   Enter on alias -> submit   Esc -> back
+    Exchange:  t/q/c toggle your-link format   y -> copy to clipboard
+               Tab -> next field   Enter on link -> jump to alias
+               Enter on alias -> submit   Esc -> back
 """
 
 from __future__ import annotations
 
+import platform
+import shutil as _shutil
+import subprocess
 import time
 from datetime import datetime
 from typing import List, Optional, TYPE_CHECKING
@@ -222,6 +226,50 @@ class ChatScreen(Screen):
         self.app.pop_screen()
 
 
+def _copy_to_clipboard(text: str) -> bool:
+    """Best-effort copy to the OS clipboard. Zero new dependencies.
+
+    Tries platform-native binaries:
+        macOS:    pbcopy
+        Windows:  clip
+        Linux:    wl-copy (Wayland) -> xclip -> xsel (X11)
+
+    Returns True if at least one tool accepted the text. We never raise;
+    a failure just means the caller will show "copy unavailable".
+    """
+    candidates: list[list[str]] = []
+    sys_name = platform.system()
+    if sys_name == "Darwin":
+        candidates.append(["pbcopy"])
+    elif sys_name == "Windows":
+        candidates.append(["clip"])
+    else:
+        for cmd in (
+            ["wl-copy"],
+            ["xclip", "-selection", "clipboard"],
+            ["xsel", "--clipboard", "--input"],
+        ):
+            if _shutil.which(cmd[0]):
+                candidates.append(cmd)
+    for cmd in candidates:
+        if not _shutil.which(cmd[0]):
+            continue
+        try:
+            p = subprocess.run(
+                cmd,
+                input=text.encode("utf-8"),
+                check=False,
+                timeout=3,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if p.returncode == 0:
+                return True
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return False
+
+
 # ---------------------------------------------------------------- Exchange
 
 class ExchangeLinksScreen(Screen):
@@ -240,6 +288,7 @@ class ExchangeLinksScreen(Screen):
         Binding("t", "show_text", "text", show=False),
         Binding("q", "show_qr", "qr", show=False),
         Binding("c", "show_code", "code", show=False),
+        Binding("y", "yank", "copy", show=True),
     ]
 
     # Do not auto-focus any widget on mount; t/q/c bindings need to
@@ -271,7 +320,7 @@ class ExchangeLinksScreen(Screen):
             id="add-pane",
         )
         yield Static(
-            "t/q/c toggle   tab edit fields   enter advance   esc leave field / back",
+            "t/q/c toggle   y copy   tab edit fields   enter advance   esc leave/back",
             id="hint",
         )
 
@@ -310,6 +359,31 @@ class ExchangeLinksScreen(Screen):
     def action_show_code(self) -> None:
         self._mode = "code"
         self._render_link()
+
+    def action_yank(self) -> None:
+        """Copy the currently-displayed link form to the OS clipboard.
+
+        text mode -> the briar:// URL itself
+        qr mode   -> the briar:// URL (QR is just a visualization of it)
+        code mode -> the 12-digit short-code (read-aloud verification)
+        """
+        status = self.query_one("#add-status", Static)
+        if self._link is None:
+            status.update("nothing to copy yet.")
+            return
+        if self._mode == "code":
+            payload = handshake.short_code(self._link)
+            label = "12-digit short-code"
+        else:
+            payload = self._link
+            label = "briar:// link"
+        if _copy_to_clipboard(payload):
+            status.update(f"copied {label} to clipboard.")
+        else:
+            status.update(
+                "no clipboard tool found "
+                "(install pbcopy / xclip / wl-copy / clip)."
+            )
 
     def action_back(self) -> None:
         # First esc: leave any input we're typing in (so t/q/c work again).
