@@ -26,7 +26,7 @@ $SOURCE_TARBALL = "https://github.com/$REPO/archive/refs/tags/$GIZ_VERSION.zip"
 # SHA-256 of the source zip at the tag. install.ps1 aborts on
 # mismatch. Auditors verify with:
 #   (Get-FileHash giz-v0.1.1.zip -Algorithm SHA256).Hash
-$SOURCE_SHA = '8109e03107edd431d472e31492cab5a7c61f57dc1bed111c0ee52937a0ebe65f'
+$SOURCE_SHA = '75690ef75d96bb2918548cbe72b9fd4fd7330acda5bf286ff9c0ff4242d0cf10'
 
 # JAR is shipped with the v0.1.0 release (the binary did not change
 # between v0.1.0 and v0.1.1; only the wrapper did). Verified by SHA.
