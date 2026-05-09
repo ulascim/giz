@@ -59,7 +59,8 @@ class ContactsScreen(Screen):
 
     def __init__(self) -> None:
         super().__init__()
-        self._contacts: List[Contact] = []
+        # Mixed list: each entry is ("contact", Contact) or ("pending", dict).
+        self._items: List[tuple] = []
 
     def compose(self) -> ComposeResult:
         yield Static("giz / contacts", id="title")
@@ -83,22 +84,33 @@ class ContactsScreen(Screen):
             contacts = self.app.client.list_contacts()
         except Exception:
             return
+        try:
+            pending = self.app.client.list_pending_contacts()
+        except Exception:
+            pending = []
         contacts.sort(key=lambda c: (not c.connected, c.display.lower()))
-        self._contacts = contacts
         self.app.contacts_cache = contacts
+
+        items: List[tuple] = [("contact", c) for c in contacts]
+        items.extend(("pending", p) for p in pending)
+        self._items = items
+
         list_view = self.query_one(ListView)
         list_view.clear()
         empty = self.query_one("#empty", Static)
-        if not contacts:
+        if not items:
             empty.update("no contacts. press a to add one.")
             empty.display = True
             list_view.display = False
             return
         empty.display = False
         list_view.display = True
-        for c in contacts:
-            unread = self.app.unread.get(c.id, 0)
-            list_view.append(_contact_item(c, unread))
+        for kind, payload in items:
+            if kind == "contact":
+                unread = self.app.unread.get(payload.id, 0)
+                list_view.append(_contact_item(payload, unread))
+            else:
+                list_view.append(_pending_item(payload))
         list_view.index = 0
 
     def action_add_contact(self) -> None:
@@ -122,9 +134,18 @@ class ContactsScreen(Screen):
     def _open_highlighted(self) -> None:
         list_view = self.query_one(ListView)
         idx = list_view.index
-        if idx is None or idx < 0 or idx >= len(self._contacts):
+        if idx is None or idx < 0 or idx >= len(self._items):
             return
-        contact = self._contacts[idx]
+        kind, payload = self._items[idx]
+        if kind == "pending":
+            self.app.notify(
+                "still handshaking with this contact over Tor. "
+                "this can take a few minutes for new accounts.",
+                severity="warning",
+                timeout=6,
+            )
+            return
+        contact = payload
         self.app.unread[contact.id] = 0
         self.app.push_screen(ChatScreen(contact))
 
@@ -140,6 +161,29 @@ def _contact_item(c: Contact, unread: int) -> ListItem:
     row = Horizontal(
         Label(name_text, classes="contact-name"),
         Label(status, classes="contact-status"),
+        classes="contact-row",
+    )
+    return ListItem(row)
+
+
+def _pending_item(p: dict) -> ListItem:
+    """A pending contact is one we added but Briar hasn't finished
+    the Tor handshake for yet. Briar's pending state field is one of:
+    'waiting_for_connection', 'offline', 'connecting', 'added', 'failed'.
+    """
+    pc = p.get("pendingContact", {}) if isinstance(p, dict) else {}
+    alias = pc.get("alias") or "(no alias)"
+    state = p.get("state", "pending") if isinstance(p, dict) else "pending"
+    state_pretty = {
+        "waiting_for_connection": "pending: waiting for connection",
+        "offline":                "pending: offline, retrying",
+        "connecting":             "pending: connecting over Tor",
+        "added":                  "pending: finalizing",
+        "failed":                 "pending: failed; remove and retry",
+    }.get(str(state), f"pending: {state}")
+    row = Horizontal(
+        Label(str(alias), classes="contact-name"),
+        Label(state_pretty, classes="contact-status"),
         classes="contact-row",
     )
     return ListItem(row)
@@ -315,7 +359,7 @@ class ExchangeLinksScreen(Screen):
             Input(placeholder="briar://...", id="paste-link"),
             Static("", id="paste-code"),
             Label("name for this contact, then enter to add:"),
-            Input(placeholder="alias", id="paste-alias"),
+            Input(placeholder="type a name and press enter", id="paste-alias"),
             Static("", id="add-status"),
             id="add-pane",
         )
@@ -379,6 +423,11 @@ class ExchangeLinksScreen(Screen):
             label = "briar:// link"
         if _copy_to_clipboard(payload):
             status.update(f"copied {label} to clipboard.")
+            # After copying YOUR link, the natural next step is pasting
+            # YOUR FRIEND'S link. Prime the paste-link input so the user
+            # can paste immediately and esc behaves predictably (esc
+            # defocuses input first, then a second esc returns home).
+            self.set_focus(self.query_one("#paste-link", Input))
         else:
             status.update(
                 "no clipboard tool found "
@@ -439,14 +488,22 @@ class ExchangeLinksScreen(Screen):
             self.app.client.add_pending(link, alias)
         except Exception as exc:
             status.update(f"add failed: {exc}")
+            self.app.notify(f"add failed: {exc}", severity="error", timeout=8)
             return
         self.query_one("#paste-link", Input).value = ""
         self.query_one("#paste-alias", Input).value = ""
         self.query_one("#paste-code", Static).update("")
         self.set_focus(None)
         status.update(
-            f"added '{alias}'. handshake completes when both are online. "
-            f"esc to go back."
+            f"added '{alias}'. now waiting for the Tor handshake "
+            f"(few minutes for new accounts). esc to go back."
+        )
+        # A toast is hard to miss; the inline status alone proved confusing.
+        self.app.notify(
+            f"added '{alias}'. it will appear on the contacts screen as "
+            f"'pending' until both sides finish handshaking over Tor.",
+            severity="information",
+            timeout=8,
         )
 
 
