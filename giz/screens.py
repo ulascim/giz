@@ -174,19 +174,33 @@ def _contact_item(c: Contact, unread: int) -> ListItem:
 
 def _pending_item(p: dict) -> ListItem:
     """A pending contact is one we added but Briar hasn't finished
-    the Tor handshake for yet. Briar's pending state field is one of:
-    'waiting_for_connection', 'offline', 'connecting', 'added', 'failed'.
+    the Tor handshake for yet.
+
+    Briar's internal state field is one of:
+        'waiting_for_connection' | 'offline' | 'connecting'
+        | 'added' | 'failed'
+
+    The first three all mean the same thing to a user ('still doing
+    the Tor handshake'); they only differ in which phase of Briar's
+    own retry loop the daemon happens to be in at the moment of the
+    poll. Showing them verbatim caused a false asymmetry between two
+    machines (one would say 'waiting' while the other said 'offline'
+    even though neither was more connected than the other), so we
+    collapse them into a single honest line. Only the terminal
+    'added' / 'failed' states get distinct messages, because those
+    actually mean something different to the user.
     """
     pc = p.get("pendingContact", {}) if isinstance(p, dict) else {}
     alias = pc.get("alias") or "(no alias)"
     state = p.get("state", "pending") if isinstance(p, dict) else "pending"
-    state_pretty = {
-        "waiting_for_connection": "pending: waiting for connection",
-        "offline":                "pending: offline, retrying",
-        "connecting":             "pending: connecting over Tor",
-        "added":                  "pending: finalizing",
-        "failed":                 "pending: failed; remove and retry",
-    }.get(str(state), f"pending: {state}")
+    if state in ("waiting_for_connection", "offline", "connecting"):
+        state_pretty = "pending: handshaking over Tor (15-20 min on first contact)"
+    elif state == "added":
+        state_pretty = "pending: finalizing"
+    elif state == "failed":
+        state_pretty = "pending: failed; remove and retry"
+    else:
+        state_pretty = f"pending: {state}"
     row = Horizontal(
         Label(str(alias), classes="contact-name"),
         Label(state_pretty, classes="contact-status"),
