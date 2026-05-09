@@ -262,7 +262,18 @@ case ":${PATH}:" in
         ;;
 esac
 
-# ---- run setup --------------------------------------------------------------
+# ---- run setup (only on a fresh install) -----------------------------------
+
+# An existing .gizhashes means an account already lives at DATA_DIR. Re-running
+# the installer is then an upgrade, not a first run. We must NOT call
+# 'giz --setup' in that case: giz will refuse with exit 4, but more
+# importantly, asking for nickname/passwords here would imply we are about
+# to clobber the account. We never touch DATA_DIR contents in either path.
+if [[ -f "${DATA_DIR}/.gizhashes" ]]; then
+    green "upgrade complete. existing account at ${DATA_DIR} preserved."
+    dim   "run 'giz' to log in with your existing password."
+    exit 0
+fi
 
 green "install complete. starting first-run setup..."
 echo

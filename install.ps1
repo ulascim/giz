@@ -221,7 +221,18 @@ if ($userPath -notlike "*$BIN_DIR*") {
     Yellow "      PATH updated. New PowerShell windows will have 'giz' available."
 }
 
-# ---- run setup --------------------------------------------------------------
+# ---- run setup (only on a fresh install) -----------------------------------
+
+# An existing .gizhashes means an account already lives at DATA_DIR. Re-running
+# the installer is then an upgrade, not a first run. We must NOT call
+# 'giz --setup' in that case: giz will refuse with exit 4, but more
+# importantly, asking for nickname/passwords here would imply we are about
+# to clobber the account. We never touch DATA_DIR contents in either path.
+if (Test-Path (Join-Path $DATA_DIR '.gizhashes')) {
+    Green "upgrade complete. existing account at $DATA_DIR preserved."
+    Dim   "run 'giz' to log in with your existing password."
+    exit 0
+}
 
 Green "install complete. starting first-run setup..."
 Write-Host
