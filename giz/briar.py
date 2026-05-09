@@ -126,6 +126,12 @@ class BriarClient:
     def delete_contact(self, contact_id: int) -> None:
         self._delete(f"/v1/contacts/{contact_id}")
 
+    def remove_pending(self, pending_id: str) -> None:
+        """Cancel a pending contact (one we added but Tor handshake hasn't
+        finished). The id is the base32 'pendingContactId' field of the
+        objects returned by list_pending_contacts(), NOT a numeric id."""
+        self._delete(f"/v1/contacts/add/pending/{pending_id}")
+
     def messages(self, contact_id: int) -> List[Message]:
         return [
             _parse_message(m, contact_id) for m in self._get(f"/v1/messages/{contact_id}")

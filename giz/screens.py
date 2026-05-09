@@ -50,6 +50,7 @@ class ContactsScreen(Screen):
     BINDINGS = [
         Binding("a", "add_contact", "add friend", show=True),
         Binding("s", "share_link", "share my link", show=True),
+        Binding("x", "remove", "remove", show=True),
         Binding("r", "refresh", "refresh", show=True),
         Binding("i", "info", "info", show=True),
         Binding("q", "quit", "quit", show=True),
@@ -58,17 +59,24 @@ class ContactsScreen(Screen):
 
     app: "GizApp"  # type: ignore[assignment]
 
+    # Removal is two-tap: first 'x' arms; second 'x' on the same row
+    # within REMOVE_CONFIRM_S executes. Anything else (move, refresh,
+    # different row) cancels.
+    REMOVE_CONFIRM_S = 5.0
+
     def __init__(self) -> None:
         super().__init__()
         # Mixed list: each entry is ("contact", Contact) or ("pending", dict).
         self._items: List[tuple] = []
+        self._remove_armed_idx: Optional[int] = None
+        self._remove_armed_at: float = 0.0
 
     def compose(self) -> ComposeResult:
         yield Static("giz / contacts", id="title")
         yield ListView(id="contacts-list")
         yield Static(id="empty")
         yield Static(
-            "enter chat   a add a friend   s share my link   "
+            "enter chat   a add   s share   x remove   "
             "r refresh   i info   q quit",
             id="hint",
         )
@@ -133,8 +141,65 @@ class ContactsScreen(Screen):
     def action_open_chat(self) -> None:
         self._open_highlighted()
 
+    def action_remove(self) -> None:
+        list_view = self.query_one(ListView)
+        idx = list_view.index
+        if idx is None or idx < 0 or idx >= len(self._items):
+            return
+        kind, payload = self._items[idx]
+        name = payload.display if kind == "contact" else (
+            (payload.get("pendingContact") or {}).get("alias") or "(no alias)"
+        )
+
+        now = time.time()
+        # Second tap within the window on the same row -> commit.
+        if (
+            self._remove_armed_idx == idx
+            and now - self._remove_armed_at <= self.REMOVE_CONFIRM_S
+        ):
+            self._remove_armed_idx = None
+            self._do_remove(kind, payload, name)
+            return
+
+        # First tap (or a stale arm) -> arm and warn.
+        self._remove_armed_idx = idx
+        self._remove_armed_at = now
+        self.app.notify(
+            f"press x again within {int(self.REMOVE_CONFIRM_S)}s to remove "
+            f"'{name}'. anything else cancels.",
+            severity="warning",
+            timeout=self.REMOVE_CONFIRM_S,
+        )
+
+    def _do_remove(self, kind: str, payload, name: str) -> None:
+        try:
+            if kind == "contact":
+                self.app.client.delete_contact(payload.id)
+                self.app.unread.pop(payload.id, None)
+            else:
+                pid = (payload.get("pendingContact") or {}).get("pendingContactId")
+                if not pid:
+                    raise RuntimeError("no pendingContactId on pending contact")
+                self.app.client.remove_pending(pid)
+        except Exception as exc:
+            self.app.notify(
+                f"could not remove '{name}': {exc}",
+                severity="error", timeout=8,
+            )
+            return
+        self.app.notify(
+            f"removed '{name}'.",
+            severity="information", timeout=4,
+        )
+        self.refresh_contacts()
+
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self._open_highlighted()
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        # Moving the highlight cancels any armed removal so the user
+        # cannot navigate to a different row and accidentally delete it.
+        self._remove_armed_idx = None
 
     def _open_highlighted(self) -> None:
         list_view = self.query_one(ListView)
