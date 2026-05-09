@@ -145,9 +145,10 @@ class ContactsScreen(Screen):
         if kind == "pending":
             self.app.notify(
                 "still handshaking with this contact over Tor. "
-                "this can take a few minutes for new accounts.",
+                "the first connection between two new accounts "
+                "usually takes 15-20 minutes. just leave giz open.",
                 severity="warning",
-                timeout=6,
+                timeout=8,
             )
             return
         contact = payload
@@ -506,11 +507,12 @@ class AddContactScreen(Screen):
         self.query_one("#paste-code", Static).update("")
         status.update(
             f"added '{alias}'. now waiting for the Tor handshake "
-            f"(few minutes for new accounts). esc to go back."
+            f"(15-20 minutes for a new pair of accounts). esc to go back."
         )
         self.app.notify(
             f"added '{alias}'. it will appear on the contacts screen as "
-            f"'pending' until both sides finish handshaking over Tor.",
+            f"'pending' until both sides finish handshaking over Tor "
+            f"(usually 15-20 minutes for new accounts).",
             severity="information",
             timeout=8,
         )
