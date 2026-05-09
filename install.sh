@@ -33,7 +33,7 @@ SOURCE_TARBALL="https://github.com/${REPO}/archive/refs/tags/${GIZ_VERSION}.tar.
 # Auditors verify by:
 #   curl -fsSL https://github.com/ulascim/giz/archive/refs/tags/v0.1.1.tar.gz \
 #     | shasum -a 256
-SOURCE_SHA="aaf8e4e90411769d95ef6b1f7d59528c4444a099eddf2fa74ca82031d2a59d63"
+SOURCE_SHA="7488039582b18cd2b9688ac84fc1acaa578e763841d9102f80dd3506c04a5a27"
 
 # JAR is shipped with the v0.1.0 release (the binary did not change
 # between v0.1.0 and v0.1.1; only the wrapper did). Verified by SHA.
