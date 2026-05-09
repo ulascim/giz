@@ -48,3 +48,16 @@ THREAT_MODEL.md
 dev-requirements.txt
 pytest.ini
 ruff.toml
+
+# Scanner raw outputs from the v0.2.3 expansion stay local. Findings
+# summaries and SBOMs that are part of the public proof remain checked
+# in (security-scans/2026-05-09/SUMMARY.md and *.json/*.spdx already
+# committed in v0.2.2); these large per-tool dumps are generated
+# fresh on each run and are reproducible from the documented commands.
+security-scans/**/codeql.sarif
+security-scans/**/trivy.json
+security-scans/**/checkov.json
+security-scans/**/pyright.json
+security-scans/**/yara.txt
+security-scans/**/graudit.txt
+pyrightconfig.json

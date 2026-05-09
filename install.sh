@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-GIZ_VERSION="v0.2.2"
+GIZ_VERSION="v0.2.3"
 REPO="ulascim/giz"
 RELEASE_BASE="https://github.com/${REPO}/releases/download/v0.1.0"
 SOURCE_TARBALL="https://github.com/${REPO}/archive/refs/tags/${GIZ_VERSION}.tar.gz"
@@ -33,7 +33,7 @@ SOURCE_TARBALL="https://github.com/${REPO}/archive/refs/tags/${GIZ_VERSION}.tar.
 # Auditors verify by:
 #   curl -fsSL https://github.com/ulascim/giz/archive/refs/tags/v0.2.0.tar.gz \
 #     | shasum -a 256
-SOURCE_SHA="4cc34d4c0adfc1ce98180cde2dd46a403f0bfe8ffb549a3da8efc7561eeeca32"
+SOURCE_SHA="REGENERATE_AT_TAG_TIME"
 
 # JAR is shipped with the v0.1.0 release (the binary did not change
 # between v0.1.0 and v0.1.1; only the wrapper did). Verified by SHA.
