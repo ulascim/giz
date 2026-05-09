@@ -40,7 +40,13 @@ from pathlib import Path
 from typing import Callable, Optional
 
 _LOCKFILE: Optional[Path] = None
+_MACHINE_LOCKFILE: Optional[Path] = None
+_MACHINE_LOCK_FD: Optional[int] = None
 _SHUTDOWN_HOOKS: list[Callable[[], None]] = []
+
+
+class MachineLockError(RuntimeError):
+    """Raised when another giz instance is already running on this machine."""
 
 
 def install_guards(data_dir: Path) -> None:
@@ -239,6 +245,97 @@ def _release_lockfile() -> None:
         except OSError:
             pass
         _LOCKFILE = None
+
+
+def acquire_machine_lock() -> None:
+    """Refuse to start if another giz is running on this same machine.
+
+    Why this exists, and why a per-data-dir lock is not enough:
+
+    Briar embeds a 'tor' binary that, on every launch, asks the kernel
+    for control / SOCKS ports through onionwrapper. On macOS / Linux
+    those bindings collide between two Briar processes on the same
+    host: the first instance starts cleanly, the second one logs
+
+        WARNING: org.briarproject.bramble.tor did not start
+        java.io.IOException at AbstractTorWrapper.waitForTorToStart
+
+    and from then on its hidden services are never published, so its
+    contacts stay 'pending' indefinitely - which from the user's
+    seat looks identical to a contact handshake bug. The fix from
+    outside Briar is to refuse to launch in the first place and tell
+    the user there can only be one giz per machine.
+
+    Lock is held via flock() (POSIX) / msvcrt.locking() (Windows) on
+    a per-user file. The kernel releases it automatically on process
+    exit, including hard kill, so a stale lock cannot lock the user
+    out forever.
+    """
+    global _MACHINE_LOCKFILE, _MACHINE_LOCK_FD
+
+    if _MACHINE_LOCK_FD is not None:
+        return
+
+    # Per-user (NOT /tmp, which is shared across users) and predictable
+    # so the same path is used by every giz invocation on this account.
+    lock_dir = Path.home() / ".local" / "share" / "giz"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / ".machine-lock"
+
+    try:
+        fd = os.open(
+            str(lock_path),
+            os.O_CREAT | os.O_RDWR,
+            0o600,
+        )
+    except OSError as exc:
+        raise MachineLockError(
+            f"could not open machine lock at {lock_path}: {exc}"
+        )
+
+    busy_message = (
+        "another giz instance is already running on this machine. "
+        "giz allows only one account per machine because Briar's "
+        "embedded Tor cannot share local ports with a second Briar "
+        "process - the second instance's hidden services never "
+        "publish and its contacts stay 'pending' forever. close "
+        "the other giz first."
+    )
+    if platform.system() == "Windows":
+        try:
+            import msvcrt  # type: ignore[import-not-found]
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+        except OSError:
+            os.close(fd)
+            raise MachineLockError(busy_message)
+    else:
+        try:
+            import fcntl  # POSIX-only
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, ImportError):
+            os.close(fd)
+            raise MachineLockError(busy_message)
+
+    try:
+        os.write(fd, f"{os.getpid()}\n".encode())
+    except OSError:
+        pass
+
+    _MACHINE_LOCK_FD = fd
+    _MACHINE_LOCKFILE = lock_path
+    register_shutdown_hook(_release_machine_lock)
+
+
+def _release_machine_lock() -> None:
+    global _MACHINE_LOCK_FD, _MACHINE_LOCKFILE
+    fd = _MACHINE_LOCK_FD
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        _MACHINE_LOCK_FD = None
+    _MACHINE_LOCKFILE = None
 
 
 def zero_bytes(buf: bytearray) -> None:

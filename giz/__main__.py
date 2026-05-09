@@ -15,18 +15,16 @@ Two modes:
         - persist Argon2 hashes
         - exit cleanly
 
-    Persona spawn (giz new <name>):
-        - validate persona name
-        - compute a fresh data dir (~/.giz-<name> or LOCALAPPDATA\\giz-<name>)
-        - subprocess into 'giz --setup --data-dir ... --port ...'
-        - drop a 'giz-<name>' launcher onto PATH
-        - exit cleanly
-        Personas are NEVER listed inside any running giz process; the
-        only way to discover them is filesystem inspection. This keeps
-        the duress-wipe model intact.
-
 The install scripts call us with --setup once, then create a launcher
 that calls us without --setup for every subsequent run.
+
+There is intentionally NO 'giz new <persona>' subcommand. Briar's
+embedded Tor cannot share local ports between two instances on the
+same machine, so a second persona's hidden services silently never
+publish and its contacts stay 'pending' forever. Rather than ship
+a feature that breaks in confusing ways, giz allows exactly one
+account per machine. Use a different physical machine for a
+separate identity.
 """
 
 from __future__ import annotations
@@ -35,8 +33,6 @@ import argparse
 import getpass
 import os
 import platform
-import re
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -61,41 +57,29 @@ def _data_dir_default() -> Path:
 def main(argv: Optional[list] = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
 
-    # Build the argparse once and use parse_known_args so flag/value
-    # pairs (e.g. '--data-dir /path') are consumed properly. Whatever
-    # positional tokens remain are real subcommand args.
     parser = argparse.ArgumentParser(prog="giz", add_help=True)
     parser.add_argument("--data-dir", type=Path, default=_data_dir_default())
     parser.add_argument("--jar", type=Path, default=None)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--setup", action="store_true",
                         help="first-run interactive setup")
-    parser.add_argument(
-        "command", nargs="?", default=None,
-        help="subcommand: 'new' to create an additional persona",
-    )
-    parser.add_argument(
-        "command_args", nargs=argparse.REMAINDER,
-        help="arguments to the subcommand",
-    )
     args = parser.parse_args(raw)
-
-    # Subcommand routing. Runs BEFORE install_guards so the parent
-    # holds no lockfile and never touches the new persona's data dir;
-    # the child subprocess does its own hardening.
-    if args.command == "new":
-        if not args.command_args:
-            sys.stderr.write("usage: giz new <persona-name>\n")
-            return 19
-        return _new_persona(args.command_args[0], args.jar)
-    if args.command is not None:
-        sys.stderr.write(f"unknown command: {args.command}\n")
-        return 23
 
     data_dir = args.data_dir.expanduser()
     data_dir.mkdir(parents=True, exist_ok=True)
 
     hardening.install_guards(data_dir)
+    # Machine-wide lock: refuse to start a second briar-headless on
+    # the same host, because Briar's embedded Tor cannot share local
+    # ports and the second one's hidden services silently never
+    # publish. Exempt --setup so a re-run of first-time setup does
+    # not get blocked by a stale lock from a crashed earlier run.
+    if not args.setup:
+        try:
+            hardening.acquire_machine_lock()
+        except hardening.MachineLockError as exc:
+            sys.stderr.write(f"refused to start: {exc}\n")
+            return 17
     perms_error = hardening.enforce_perms(data_dir)
     if perms_error:
         sys.stderr.write(f"refused to start: {perms_error}\n")
@@ -290,6 +274,23 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
             real_dir, timeout_seconds=180.0, status_writer=sys.stdout, proc=proc,
         )
     except TimeoutError as exc:
+        # Surface the most common cause loud and early: Briar's
+        # embedded Tor failed to bind because another giz / Briar
+        # is running on this machine. Without this, the user just
+        # sits at 'still loading...' for 3 minutes.
+        if _daemon_log_contains(proc, "did not start") or _daemon_log_contains(
+            proc, "AbstractTorWrapper.waitForTorToStart"
+        ):
+            sys.stderr.write(
+                "\ndaemon's embedded Tor failed to start. The most common\n"
+                "cause is another giz / Briar process already running on\n"
+                "this machine - Briar's embedded Tor cannot share local\n"
+                "ports between two instances. close the other giz, then\n"
+                "try again. on a different machine, this just works.\n\n"
+            )
+            _dump_daemon_log(proc, sys.stderr)
+            proc.stop()
+            return 18
         sys.stderr.write(
             f"\ndaemon did not produce auth token: {exc}\n"
             f"this usually means Java did not start, the wrong Java\n"
@@ -358,111 +359,6 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
         client.close()
         proc.stop()
     return rc
-
-
-_PERSONA_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
-_RESERVED_PERSONAS = {"new", "main", "default", "setup", "help"}
-
-
-def _extract_flag(argv: list, flag: str) -> Optional[Path]:
-    """Return the value of --flag <value> from argv, or None."""
-    for i, tok in enumerate(argv):
-        if tok == flag and i + 1 < len(argv):
-            return Path(argv[i + 1]).expanduser()
-        if tok.startswith(flag + "="):
-            return Path(tok[len(flag) + 1:]).expanduser()
-    return None
-
-
-def _persona_data_dir(persona: str) -> Path:
-    if platform.system() == "Windows":
-        local = os.environ.get("LOCALAPPDATA")
-        root = Path(local) if local else Path.home()
-        return root / f"giz-{persona}"
-    return Path.home() / f".giz-{persona}"
-
-
-def _new_persona(persona: str, jar: Optional[Path]) -> int:
-    """Create an additional persona alongside the primary account.
-
-    Personas are independent: separate keypairs, separate Briar databases,
-    separate duress passwords, separate launchers. No giz process ever
-    sees more than one persona at a time, so unlocking one does not
-    reveal the others' existence inside the app. Discovery requires
-    filesystem access, which is the same threat-model boundary as
-    everything else giz protects.
-    """
-    if not _PERSONA_RE.fullmatch(persona) or persona in _RESERVED_PERSONAS:
-        sys.stderr.write(
-            "persona must be lowercase letters/digits/dash, start with a "
-            "letter, max 32 chars, and not 'new'/'main'/'default'/'setup'/'help'.\n"
-        )
-        return 20
-
-    data_dir = _persona_data_dir(persona)
-    if (data_dir / duress.HASHES_FILENAME).exists():
-        sys.stderr.write(
-            f"persona '{persona}' already exists at {data_dir}.\n"
-            f"to recreate it, delete that directory and rerun.\n"
-        )
-        return 21
-
-    if jar is None or not jar.exists():
-        sys.stderr.write(
-            "internal error: no JAR path passed to 'giz new'. "
-            "are you running giz directly instead of via the launcher?\n"
-        )
-        return 22
-
-    port = lifecycle.find_free_port(7002)
-
-    print(f"creating persona '{persona}' at {data_dir} on port {port}")
-    rc = subprocess.call(
-        [sys.executable, "-m", "giz",
-         "--setup",
-         "--data-dir", str(data_dir),
-         "--port", str(port),
-         "--jar", str(jar)],
-    )
-    if rc != 0:
-        return rc
-
-    launcher = _write_persona_launcher(persona, data_dir, jar, port)
-    print(f"\nready. run '{launcher.name}' to log in as '{persona}'.")
-    return 0
-
-
-def _write_persona_launcher(
-    persona: str, data_dir: Path, jar: Path, port: int,
-) -> Path:
-    venv_giz = Path(sys.executable).parent / (
-        "giz.exe" if platform.system() == "Windows" else "giz"
-    )
-    if platform.system() == "Windows":
-        bin_dir = jar.parent / "bin"
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        launcher = bin_dir / f"giz-{persona}.cmd"
-        launcher.write_text(
-            "@echo off\n"
-            f'"{venv_giz}" --data-dir "{data_dir}" --jar "{jar}" '
-            f'--port {port} %*\n',
-            encoding="ascii",
-        )
-    else:
-        bin_dir = Path.home() / ".local" / "bin"
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        launcher = bin_dir / f"giz-{persona}"
-        launcher.write_text(
-            "#!/usr/bin/env bash\n"
-            "set -e\n"
-            f'exec "{venv_giz}" \\\n'
-            f'    --data-dir "{data_dir}" \\\n'
-            f'    --jar "{jar}" \\\n'
-            f'    --port {port} \\\n'
-            f'    "$@"\n',
-        )
-        os.chmod(launcher, 0o755)
-    return launcher
 
 
 def _read_password_twice(label: str) -> Optional[bytearray]:
@@ -565,6 +461,16 @@ def _wait_for_api(
         f"briar-headless did not become ready within {timeout_seconds:.0f}s"
         + (f" (last error: {last_err})" if last_err else "")
     )
+
+
+def _daemon_log_contains(proc: lifecycle.HeadlessProcess, needle: str) -> bool:
+    try:
+        for line in proc.tail_logs(200):
+            if needle in line:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def _dump_daemon_log(

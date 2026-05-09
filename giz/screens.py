@@ -782,6 +782,22 @@ trust model, from outside in:
               that database irreversibly.
 
 
+one account per machine:
+
+  giz allows exactly one giz account per physical machine and ships
+  no 'add another account' or 'persona' command. this is on purpose.
+  Briar's embedded Tor cannot share local ports with a second Briar
+  process, so a second account on the same machine would silently
+  fail to publish its hidden services and every contact it added
+  would stay 'pending' forever - a subtle, hard-to-explain failure
+  mode. removing the feature also reduces attack surface: there is
+  no per-account discovery to leak, no extra launchers on PATH, and
+  the duress-wipe model has only one secret door to defend.
+
+  if you need a separate identity, run giz on a separate physical
+  machine.
+
+
 what giz does NOT protect you from:
 
   - malware on the machine you are typing on. screen recorders,

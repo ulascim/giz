@@ -57,27 +57,18 @@ Three screens, keyboard only, no mouse:
 
 That's the whole UI. There are no slash commands.
 
-## Multiple personas
+## One account per machine
 
-By design, one running `giz` shows exactly one account. This protects
-the duress-wipe model: an attacker who unlocks your app cannot see a
-list of "other" accounts. Personas exist only on the filesystem, not
-inside any running process.
+`giz` allows exactly one account per physical machine and ships no
+`giz new`, persona, or "add another account" command. Briar's
+embedded Tor cannot share local ports with a second Briar process,
+so a second account on the same machine would silently fail to
+publish its hidden services and every contact it added would stay
+"pending" forever. Removing the feature also reduces attack surface
+and keeps the duress-wipe model with exactly one secret door.
 
-To create a second persona alongside your primary account:
-
-```bash
-giz new bob
-```
-
-This creates `~/.giz-bob/` with its own keypair, its own real password,
-its own duress password, and drops a `giz-bob` launcher in `~/.local/bin/`.
-Run `giz` and `giz-bob` in two separate terminals to use them side by
-side. Each persona is independent and reachable as a Briar contact in
-its own right; you can even add `giz-bob` as a contact of your primary
-account if you want to test locally.
-
-Persona names are lowercase letters/digits/dash, max 32 chars.
+If you need a separate identity, install `giz` on a separate
+physical machine.
 
 ## Adding a contact
 
