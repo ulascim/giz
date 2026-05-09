@@ -296,6 +296,11 @@ class ChatScreen(Screen):
     def __init__(self, contact: Contact) -> None:
         super().__init__()
         self.contact = contact
+        # Tracks the (count, last_timestamp) of the last successful
+        # render so the periodic poll can skip redraws when the
+        # daemon's view of the thread hasn't changed. Without this
+        # we'd flicker the whole log every poll tick.
+        self._last_render_key: tuple = (-1, -1)
 
     def compose(self) -> ComposeResult:
         yield Static(self._title(), id="title")
@@ -320,6 +325,35 @@ class ChatScreen(Screen):
             self.app.client.mark_read(self.contact.id)
         except Exception:
             pass
+        # Belt-and-braces: even with the websocket event-driven path,
+        # poll the daemon every 4s to pick up anything we missed (event
+        # JSON shape changes between briar versions; better to be late
+        # than to silently drop messages). Side effect: also keeps
+        # 'online/offline' fresh in the title.
+        self._poll_timer = self.set_interval(4.0, self._poll)
+
+    def on_unmount(self) -> None:
+        timer = getattr(self, "_poll_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+
+    def _poll(self) -> None:
+        # Cheap loopback call. If it fails, swallow; the disconnect
+        # path on the WS thread will surface the real error.
+        try:
+            self.reload_history()
+        except Exception:
+            pass
+        try:
+            for c in self.app.client.list_contacts():
+                if c.id == self.contact.id:
+                    self.update_contact_state(c)
+                    break
+        except Exception:
+            pass
 
     def on_screen_resume(self) -> None:
         # If the user pushed and popped a sub-screen, focus may have
@@ -336,25 +370,46 @@ class ChatScreen(Screen):
             pass
 
     def _title(self) -> str:
-        if self.contact.connected:
-            state = "online" if self.contact.verified else "online, unverified"
-        else:
-            state = "offline"
+        # Briar tags a contact 'verified' only after an in-person QR
+        # exchange; giz currently only supports link exchange, so every
+        # contact will be 'unverified' forever. Surfacing that in the
+        # title just confuses users into thinking the connection is
+        # weaker than it is. Messages are end-to-end encrypted and
+        # signed regardless. Keep the title to plain online/offline.
+        state = "online" if self.contact.connected else "offline"
         return f"giz / {self.contact.display} ({state})"
 
-    def _load_history(self) -> None:
+    def _load_history(self, *, force: bool = True) -> None:
         log = self.query_one("#log", RichLog)
-        log.clear()
         try:
             msgs = self.app.client.messages(self.contact.id)
         except Exception as exc:
-            log.write(f"could not load history: {exc}")
+            if force:
+                log.clear()
+                log.write(f"could not load history: {exc}")
+                self._last_render_key = (-1, -1)
             return
+        last_ts = msgs[-1].timestamp if msgs else 0
+        key = (len(msgs), last_ts)
+        if not force and key == self._last_render_key:
+            return
+        self._last_render_key = key
+        log.clear()
         if not msgs:
             log.write("(no messages yet)")
             return
         for m in msgs:
             self._write_message(m.text, m.timestamp, outgoing=m.is_outgoing)
+
+    def reload_history(self) -> None:
+        """Re-render the chat from the daemon's authoritative copy.
+
+        Called whenever a websocket event reports a change for this
+        thread (inbound message, ack, delivery). Re-renders only if
+        the message count or last timestamp changed, so the periodic
+        safety-net poll does not flicker the log.
+        """
+        self._load_history(force=False)
 
     def _write_message(self, text: str, ts_ms: int, *, outgoing: bool) -> None:
         log = self.query_one("#log", RichLog)

@@ -85,10 +85,31 @@ class GizApp(App):
     # -------- main-thread handlers --------
 
     def _handle_event(self, event: Dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
+        # briar-headless wraps events differently across versions:
+        #   {"name": "X", "data": {...}}        (older docs)
+        #   {"type": "X", "data": {...}}        (some builds)
+        #   {"type": "X", "event": {...}}       (other builds)
+        # Be tolerant. Without this, PrivateMessageReceivedEvent
+        # arrived but data ended up pointing at the OUTER object,
+        # so contactId was None and the chat never refreshed live.
         name = event.get("name") or event.get("type") or ""
-        data = event.get("data", event) if isinstance(event, dict) else {}
-        if "PrivateMessageReceived" in name:
+        data: Dict[str, Any] = {}
+        for key in ("data", "event"):
+            v = event.get(key)
+            if isinstance(v, dict):
+                data = v
+                break
+        if not data:
+            data = event
+
+        if "PrivateMessageReceived" in name or "PrivateMessageAdded" in name:
             self._on_private_message(data)
+        elif "MessagesAck" in name or "MessagesSent" in name:
+            # Outgoing message was delivered; refresh the visible chat
+            # so 'sent' / 'seen' flags update.
+            self._refresh_visible_chat_messages()
         elif "ContactConnected" in name or "ContactDisconnected" in name:
             self._refresh_contacts_cache()
             self._refresh_visible_contacts_screen()
@@ -117,10 +138,22 @@ class GizApp(App):
         )
 
     def _on_private_message(self, data: Dict[str, Any]) -> None:
+        # Briar's private-message events vary in shape: some carry the
+        # message text, some don't. Rather than depend on that, treat
+        # the event as 'something changed for this contact's thread'
+        # and re-pull from /v1/messages so the daemon is always the
+        # source of truth. Cheap (loopback REST) and version-proof.
         cid = data.get("contactId")
-        text = data.get("text") or data.get("body") or ""
-        ts = int(data.get("timestamp", 0)) or 0
         if cid is None:
+            # Some payloads nest contactId under a wrapper.
+            for key in ("message", "privateMessage", "msg"):
+                inner = data.get(key)
+                if isinstance(inner, dict) and "contactId" in inner:
+                    cid = inner["contactId"]
+                    break
+        if cid is None:
+            # Last resort: refresh whatever chat the user is looking at.
+            self._refresh_visible_chat_messages()
             return
         try:
             cid = int(cid)
@@ -128,10 +161,19 @@ class GizApp(App):
             return
         screen = self.screen
         if isinstance(screen, ChatScreen) and screen.contact.id == cid:
-            screen.add_message_inbound(text, ts)
+            screen.reload_history()
+            try:
+                self.client.mark_read(cid)
+            except Exception:
+                pass
             return
         self.unread[cid] = self.unread.get(cid, 0) + 1
         self._refresh_visible_contacts_screen()
+
+    def _refresh_visible_chat_messages(self) -> None:
+        screen = self.screen
+        if isinstance(screen, ChatScreen):
+            screen.reload_history()
 
     def _refresh_contacts_cache(self) -> None:
         try:
