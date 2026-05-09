@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-GIZ_VERSION="v0.1.13"
+GIZ_VERSION="v0.1.14"
 REPO="ulascim/giz"
 RELEASE_BASE="https://github.com/${REPO}/releases/download/v0.1.0"
 SOURCE_TARBALL="https://github.com/${REPO}/archive/refs/tags/${GIZ_VERSION}.tar.gz"
@@ -123,18 +123,73 @@ have_java_17() {
     [[ -n "${v}" ]] && [[ "${v}" -ge 17 ]]
 }
 
+# Find an existing Homebrew install even if `brew` is not yet on PATH.
+# A fresh macOS Terminal can have brew installed but the shell rc not
+# yet sourced; we should not declare 'brew missing' in that case.
+find_brew() {
+    if command -v brew >/dev/null 2>&1; then
+        command -v brew
+        return 0
+    fi
+    for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        if [[ -x "${candidate}" ]]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
 if ! have_java_17; then
-    yellow "Java 17+ not found - installing via Homebrew (will require your password if Homebrew is not yet installed)."
-    if ! command -v brew >/dev/null 2>&1; then
-        die "Homebrew is required for Java install. Install Homebrew from https://brew.sh and rerun."
+    yellow "Java 17+ not found - installing it now."
+    BREW_BIN="$(find_brew || true)"
+    if [[ -z "${BREW_BIN}" ]]; then
+        red "Homebrew is required to install Java but was not found."
+        red ""
+        red "Install Homebrew first by running this single line in Terminal:"
+        red ""
+        red "  /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+        red ""
+        red "Homebrew will ask for your Mac password (this is normal; it's"
+        red "needed to write to /opt/homebrew on Apple Silicon or to"
+        red "/usr/local on Intel). After Homebrew finishes, re-run the"
+        red "giz one-liner:"
+        red ""
+        red "  curl -fsSL https://raw.githubusercontent.com/ulascim/giz/main/install.sh | bash"
+        die "exiting; install Homebrew first"
     fi
-    brew install --quiet openjdk@17 || die "Java install failed"
-    JAVA_BIN="$(brew --prefix)/opt/openjdk@17/bin/java"
+    dim "using Homebrew at ${BREW_BIN}"
+
+    # Capture stderr so we can show what actually went wrong if the
+    # install fails. brew install does NOT need sudo for a normal user
+    # install; if it asks for a password something is unusual.
+    BREW_LOG="${TMP_DIR:-/tmp}/giz-brew-openjdk17.log"
+    if ! "${BREW_BIN}" install openjdk@17 >"${BREW_LOG}" 2>&1; then
+        red "brew install openjdk@17 failed. last 20 lines of output:"
+        red "--------------------------------------------------------"
+        tail -n 20 "${BREW_LOG}" | sed 's/^/  /'
+        red "--------------------------------------------------------"
+        red "full log: ${BREW_LOG}"
+        die "Java install failed"
+    fi
+
+    BREW_PREFIX="$("${BREW_BIN}" --prefix 2>/dev/null || true)"
+    JAVA_BIN="${BREW_PREFIX}/opt/openjdk@17/bin/java"
     if [[ ! -x "${JAVA_BIN}" ]]; then
-        die "openjdk@17 installed but ${JAVA_BIN} not found"
+        red "openjdk@17 installed but ${JAVA_BIN} not found."
+        red "Try running:  ${BREW_BIN} reinstall openjdk@17"
+        die "Java not at the expected path after install"
     fi
-    export PATH="$(brew --prefix)/opt/openjdk@17/bin:${PATH}"
-    have_java_17 || die "Java 17 still not visible after install. Add $(brew --prefix)/opt/openjdk@17/bin to PATH manually."
+    export PATH="${BREW_PREFIX}/opt/openjdk@17/bin:${PATH}"
+
+    # Final ground-truth check: actually run java -version. If this
+    # fails we abort here, NOT later when the user tries to log in.
+    if ! "${JAVA_BIN}" -version >/dev/null 2>&1; then
+        red "${JAVA_BIN} exists but cannot be executed."
+        red "Try:  xattr -dr com.apple.quarantine \"$(dirname "${JAVA_BIN}")\""
+        die "Java binary present but unrunnable"
+    fi
+    have_java_17 || die "Java 17 still not visible after install. Add ${BREW_PREFIX}/opt/openjdk@17/bin to PATH manually."
 fi
 
 dim "java: $(java -version 2>&1 | head -n1)"
@@ -226,6 +281,53 @@ exec "${VENV}/bin/giz" \\
     "\$@"
 EOF
 chmod +x "${LAUNCHER}"
+
+# ---- second launcher on the Homebrew bin --------------------------------
+#
+# Why: ${LAUNCHER} lives in ~/.local/bin which we have to add to PATH via
+# rc files. Appending to .zshrc does NOT update an already-running
+# shell, so users who type 'giz' in the SAME terminal that ran
+# 'curl ... | bash' get 'command not found' even after a successful
+# install. /opt/homebrew/bin (Apple Silicon) and /usr/local/bin (Intel)
+# are on PATH for every macOS shell out of the box, AND after Homebrew
+# is set up they are user-writable without sudo, so we can drop a
+# symlink there without prompting for a password. This is the same
+# trick npm install -g and pip --user use, but explicit.
+#
+# We write a thin shim instead of a raw symlink so that 'realpath' and
+# 'readlink -f' on the second copy still resolve to a real file the
+# user can audit, and so deleting ~/.local/bin/giz never breaks the
+# shim.
+
+BREW_BIN_DIR=""
+case "${OS_KIND}" in
+    Darwin)
+        if BREW_BIN_PATH="$(find_brew 2>/dev/null)"; then
+            BREW_BIN_DIR="$(dirname "${BREW_BIN_PATH}")"
+        fi
+        ;;
+    Linux)
+        # Linuxbrew is rare; if a user has it we honor it but most
+        # distros put ~/.local/bin on PATH already so we do not need
+        # this step there.
+        if BREW_BIN_PATH="$(find_brew 2>/dev/null)"; then
+            BREW_BIN_DIR="$(dirname "${BREW_BIN_PATH}")"
+        fi
+        ;;
+esac
+
+GIZ_ON_PATH=0
+if [[ -n "${BREW_BIN_DIR}" ]] && [[ -w "${BREW_BIN_DIR}" ]]; then
+    BREW_LAUNCHER="${BREW_BIN_DIR}/giz"
+    cat > "${BREW_LAUNCHER}" <<EOF
+#!/usr/bin/env bash
+# giz shim (mirrors ${LAUNCHER}). Edit the real launcher, not this.
+exec "${LAUNCHER}" "\$@"
+EOF
+    chmod +x "${BREW_LAUNCHER}"
+    dim "installed ${BREW_LAUNCHER} (already on PATH)"
+    GIZ_ON_PATH=1
+fi
 
 # ---- Time Machine exclusion (best-effort) -----------------------------------
 
@@ -325,20 +427,32 @@ fi
 
 echo
 bold "────────────────────────────────────────────────────────────"
-bold "  giz is installed. how to launch it:"
+bold "  giz is installed."
 echo
-green "  1)  open a NEW terminal window and type:"
-green "          giz"
-echo
-green "  2)  or, in THIS terminal, refresh PATH and start giz:"
-case "$(basename "${SHELL:-/bin/zsh}")" in
-    zsh)  green "          source ~/.zshrc && giz" ;;
-    bash) green "          source ~/.bash_profile && giz" ;;
-    fish) green "          fish_add_path \"\$HOME/.local/bin\" && giz" ;;
-    *)    green "          source ~/.profile && giz" ;;
-esac
-echo
-green "  3)  or run by absolute path (always works):"
-green "          ${LAUNCHER}"
+if [[ "${GIZ_ON_PATH}" == "1" ]]; then
+    # We dropped a shim into a directory that is already on every
+    # macOS shell's PATH. The user can literally just type 'giz'.
+    green "  to start it, type:"
+    green "          giz"
+    echo
+    dim   "  (the launcher also lives at ${LAUNCHER} for direct use.)"
+else
+    # Fallback path: PATH-via-rc only. The absolute path is the
+    # most-foolproof option, so it goes FIRST.
+    green "  to start it, the most reliable way is to run by"
+    green "  absolute path (works in every shell, no PATH edits needed):"
+    green "          ${LAUNCHER}"
+    echo
+    green "  or open a NEW terminal window and type:"
+    green "          giz"
+    echo
+    green "  or, in THIS terminal, refresh PATH and start giz:"
+    case "$(basename "${SHELL:-/bin/zsh}")" in
+        zsh)  green "          source ~/.zshrc && giz" ;;
+        bash) green "          source ~/.bash_profile && giz" ;;
+        fish) green "          fish_add_path \"\$HOME/.local/bin\" && giz" ;;
+        *)    green "          source ~/.profile && giz" ;;
+    esac
+fi
 bold "────────────────────────────────────────────────────────────"
 echo

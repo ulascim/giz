@@ -262,6 +262,13 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
         sys.stderr.write("authentication failed\n")
         return 12
 
+    # Make this stage talk. Without progress output the user sees a black
+    # screen for up to ~180s after typing the password (Tor bootstrap +
+    # API ready) and concludes giz is broken. Print to STDOUT, flush, so
+    # the message survives even if a child process is buffering.
+    sys.stdout.write("\nstarting Briar daemon (Tor bootstrap can take 30-90s)...\n")
+    sys.stdout.flush()
+
     free_port = lifecycle.find_free_port(port)
     proc = lifecycle.HeadlessProcess(jar, real_dir, free_port, pw)
     try:
@@ -274,10 +281,15 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
     hardening.zero_bytes(pw)
 
     try:
-        token = _wait_for_token(real_dir)
+        token = _wait_for_token(real_dir, status_writer=sys.stdout)
     except TimeoutError as exc:
         proc.stop()
-        sys.stderr.write(f"daemon did not produce auth token: {exc}\n")
+        sys.stderr.write(
+            f"\ndaemon did not produce auth token: {exc}\n"
+            f"this usually means Java did not start. quick checks:\n"
+            f"  java -version    # should show 17 or higher\n"
+            f"  ls {jar}\n"
+        )
         return 14
 
     # Re-tighten after briar-headless wrote auth_token. enforce_perms is
@@ -286,14 +298,20 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
     if perms_error:
         sys.stderr.write(f"warning: {perms_error}\n")
 
+    sys.stdout.write("daemon up. waiting for API to come online...\n")
+    sys.stdout.flush()
+
     client = briar.BriarClient("127.0.0.1", free_port, token)
     try:
         client.wait_until_ready()
     except briar.BriarError as exc:
         proc.stop()
         client.close()
-        sys.stderr.write(f"daemon never became ready: {exc}\n")
+        sys.stderr.write(f"\ndaemon never became ready: {exc}\n")
         return 15
+
+    sys.stdout.write("ready. opening UI.\n")
+    sys.stdout.flush()
 
     app = GizApp(
         client,
@@ -449,14 +467,33 @@ def _prompt_password() -> Optional[bytearray]:
         return None
 
 
-def _wait_for_token(real_dir: Path, timeout_seconds: float = 90.0) -> str:
+def _wait_for_token(
+    real_dir: Path,
+    timeout_seconds: float = 90.0,
+    *,
+    status_writer=None,
+) -> str:
+    """Poll real_dir/auth_token until briar-headless writes it.
+
+    A first-run Tor bootstrap can legitimately use most of the timeout,
+    which from the user's seat looks identical to a hang. We optionally
+    print '...still loading (Ns elapsed)' every 5 seconds so the user
+    knows giz is alive and waiting.
+    """
     deadline = time.monotonic() + timeout_seconds
     token_path = real_dir / "auth_token"
+    next_status = time.monotonic() + 5.0
+    started = time.monotonic()
     while time.monotonic() < deadline:
         if token_path.exists():
             tok = token_path.read_text().strip()
             if tok:
                 return tok
+        if status_writer is not None and time.monotonic() >= next_status:
+            elapsed = int(time.monotonic() - started)
+            status_writer.write(f"  ...still loading ({elapsed}s elapsed)\n")
+            status_writer.flush()
+            next_status += 5.0
         time.sleep(0.5)
     raise TimeoutError(f"no auth token at {token_path}")
 
