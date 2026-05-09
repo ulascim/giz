@@ -1166,4 +1166,40 @@ class DiagnosticsScreen(Screen):
             lines.append(
                 "  daemon is connected to Tor; nothing else to do here right now."
             )
+        lines.append("")
+
+        # ---- recent websocket events ----
+        # Useful when a pending contact is stuck: tells us whether
+        # Briar is firing PendingContactStateChanged at all (means it
+        # is actively retrying) or has gone quiet (means we are
+        # waiting on the network).
+        ev_log = list(getattr(self.app, "event_log", []))[-20:]
+        lines.append("recent briar events (last 20)")
+        if not ev_log:
+            lines.append("  (none yet - websocket may not be receiving)")
+        else:
+            for ts, ename in ev_log:
+                age = now - ts
+                lines.append(f"  {_fmt_duration(age):>8} ago  {ename}")
+        lines.append("")
+
+        # ---- recent daemon log ----
+        # Last lines from briar-headless stderr / stdout so users can
+        # spot a hidden-service publish failure, port bind failure,
+        # or Tor circuit error without leaving the TUI.
+        proc = getattr(self.app, "daemon_proc", None)
+        log_lines: List[str] = []
+        if proc is not None and hasattr(proc, "tail_logs"):
+            try:
+                log_lines = proc.tail_logs(20)
+            except Exception:
+                log_lines = []
+        lines.append("recent briar-headless log (last 20 lines)")
+        if not log_lines:
+            lines.append("  (no daemon output captured yet)")
+        else:
+            for ll in log_lines:
+                # truncate insanely long lines so the diag panel stays
+                # readable; full log is still in memory if we ever need it.
+                lines.append(f"  {ll[:200]}")
         return "\n".join(lines)

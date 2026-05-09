@@ -43,6 +43,7 @@ class GizApp(App):
         daemon_pid: Optional[int] = None,
         daemon_port: Optional[int] = None,
         started_at: Optional[float] = None,
+        daemon_proc: Optional[Any] = None,
     ) -> None:
         super().__init__()
         self.client = client
@@ -57,11 +58,19 @@ class GizApp(App):
         self.daemon_pid: Optional[int] = daemon_pid
         self.daemon_port: Optional[int] = daemon_port
         self.started_at: float = started_at if started_at is not None else time.time()
+        # Reference to the live HeadlessProcess so the diagnostics
+        # screen can pull tail_logs() and the user can see what
+        # briar-headless is actually saying without leaving the TUI.
+        self.daemon_proc = daemon_proc
         # last (timestamp, state) per pendingContactId. Updated from
         # PendingContactStateChangedEvent on the WS thread (forwarded
         # to the main thread via call_from_thread). Concrete proof
         # that briar is actively retrying the Tor handshake.
         self.pending_state_log: Dict[str, Tuple[float, str]] = {}
+        # Ring buffer of the last N raw event names received from the
+        # WS, for the diagnostics screen. Helps confirm the daemon is
+        # talking and surfaces wonky events we don't yet handle.
+        self.event_log: List[Tuple[float, str]] = []
 
     def on_mount(self) -> None:
         self.push_screen(ContactsScreen())
@@ -103,6 +112,14 @@ class GizApp(App):
                 break
         if not data:
             data = event
+
+        # Record everything for diagnostics so the user can see
+        # exactly what Briar is emitting (and we can identify wonky
+        # events we don't yet understand).
+        if name:
+            self.event_log.append((time.time(), name))
+            if len(self.event_log) > 200:
+                self.event_log = self.event_log[-200:]
 
         if "PrivateMessageReceived" in name or "PrivateMessageAdded" in name:
             self._on_private_message(data)

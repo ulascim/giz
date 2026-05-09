@@ -340,6 +340,7 @@ def _run(data_dir: Path, jar: Path, port: int) -> int:
         daemon_pid=proc.pid,
         daemon_port=free_port,
         started_at=time.time(),
+        daemon_proc=proc,
     )
     sub = briar.EventSubscription(
         "127.0.0.1", free_port, token,
