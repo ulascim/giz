@@ -21,7 +21,6 @@ import re
 import shutil as _shutil
 import subprocess
 import time
-from datetime import datetime
 from typing import List, Optional, TYPE_CHECKING
 
 from rich.text import Text
@@ -51,6 +50,7 @@ class ContactsScreen(Screen):
     BINDINGS = [
         Binding("a", "add_contact", "add friend", show=True),
         Binding("s", "share_link", "share my link", show=True),
+        Binding("n", "rename", "rename", show=True),
         Binding("x", "remove", "remove", show=True),
         Binding("r", "refresh", "refresh", show=True),
         Binding("d", "diagnostics", "diagnostics", show=True),
@@ -78,7 +78,7 @@ class ContactsScreen(Screen):
         yield ListView(id="contacts-list")
         yield Static(id="empty")
         yield Static(
-            "enter chat   a add   s share   x remove   "
+            "enter chat   a add   s share   n rename   x remove   "
             "d diagnostics   r refresh   i info   q quit",
             id="hint",
         )
@@ -145,6 +145,24 @@ class ContactsScreen(Screen):
 
     def action_open_chat(self) -> None:
         self._open_highlighted()
+
+    def action_rename(self) -> None:
+        list_view = self.query_one(ListView)
+        idx = list_view.index
+        if idx is None or idx < 0 or idx >= len(self._items):
+            return
+        kind, payload = self._items[idx]
+        if kind != "contact":
+            self.app.notify(
+                "rename only applies to confirmed contacts.",
+                severity="warning",
+                timeout=4,
+            )
+            return
+        # Cancel any armed delete; renaming a row should not also delete it
+        # if the user happened to press 'x' a moment ago.
+        self._remove_armed_idx = None
+        self.app.push_screen(RenameContactScreen(payload))
 
     def action_remove(self) -> None:
         list_view = self.query_one(ListView)
@@ -228,18 +246,20 @@ class ContactsScreen(Screen):
 
 def _contact_item(c: Contact, unread: int) -> ListItem:
     if c.connected:
+        dot = "[bright_green]●[/]"
         status = "online" if c.verified else "online, unverified"
     else:
+        dot = "[dim]○[/]"
         status = "offline"
-    name_text = c.display
-    if unread:
-        name_text = f"{c.display} ({unread} new)"
     row = Horizontal(
-        Label(name_text, classes="contact-name"),
-        Label(status, classes="contact-status"),
+        Label(c.display, classes="contact-name"),
+        Label(f"{dot} {status}", classes="contact-status"),
         classes="contact-row",
     )
-    return ListItem(row)
+    item = ListItem(row)
+    if unread:
+        item.add_class("unread")
+    return item
 
 
 def _pending_item(p: dict) -> ListItem:
@@ -414,9 +434,8 @@ class ChatScreen(Screen):
 
     def _write_message(self, text: str, ts_ms: int, *, outgoing: bool) -> None:
         log = self.query_one("#log", RichLog)
-        when = _fmt_time(ts_ms)
         who = "me" if outgoing else self.contact.display
-        log.write(f"{when} {who}: {text}")
+        log.write(f"{who}: {text}")
 
     def add_message_inbound(self, text: str, ts_ms: int) -> None:
         self._write_message(text, ts_ms, outgoing=False)
@@ -698,11 +717,62 @@ class AddContactScreen(Screen):
 ExchangeLinksScreen = AddContactScreen
 
 
-def _fmt_time(ts_ms: int) -> str:
-    try:
-        return datetime.fromtimestamp(ts_ms / 1000.0).strftime("%H:%M")
-    except (ValueError, OSError):
-        return "--:--"
+class RenameContactScreen(Screen):
+    """Change a confirmed contact's local alias.
+
+    The alias is stored only on this device and is never sent to the
+    contact. Briar's PUT /v1/contacts/{id}/alias accepts the new
+    string and returns no body. We do not persist anything on giz's
+    side; the next refresh of the contacts list shows the new name
+    because briar-headless is the source of truth.
+    """
+
+    BINDINGS = [
+        Binding("escape", "back", "back", show=True),
+    ]
+
+    app: "GizApp"  # type: ignore[assignment]
+
+    def __init__(self, contact: Contact) -> None:
+        super().__init__()
+        self.contact = contact
+
+    def compose(self) -> ComposeResult:
+        yield Static(f"giz / rename '{self.contact.display}'", id="title")
+        yield Label("type a new local name and press enter (only you see this):")
+        yield Input(value=self.contact.display, id="rename-input")
+        yield Static("", id="rename-status")
+        yield Static("enter rename   esc back", id="hint")
+
+    def on_mount(self) -> None:
+        self.set_focus(self.query_one("#rename-input", Input))
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        new_alias = event.value.strip()
+        status = self.query_one("#rename-status", Static)
+        if not new_alias:
+            status.update("name cannot be empty.")
+            return
+        if new_alias == self.contact.display:
+            self.app.pop_screen()
+            return
+        try:
+            self.app.client.set_alias(self.contact.id, new_alias)
+        except Exception as exc:
+            status.update(f"rename failed: {exc}")
+            self.app.notify(
+                f"rename failed: {exc}", severity="error", timeout=8,
+            )
+            return
+        self.app.notify(
+            f"renamed to '{new_alias}'.",
+            severity="information",
+            timeout=4,
+        )
+        self.app.pop_screen()
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
 
 
 # ---------------------------------------------------------------- Info

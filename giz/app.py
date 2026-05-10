@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from textual import events
 from textual.app import App
 
 from .briar import BriarClient, Contact
@@ -72,6 +73,35 @@ class GizApp(App):
 
     def on_mount(self) -> None:
         self.push_screen(ContactsScreen())
+
+    def on_click(self, event: events.Click) -> None:
+        """Global click-to-blur: clicking outside the focused widget's
+        own subtree drops focus.
+
+        Textual auto-focuses focusable widgets on click. By the time
+        this handler runs, ``self.focused`` already reflects the
+        post-click focus, so the rule is uniform: walk up the click
+        target's parent chain; if we pass through the focused widget
+        before reaching the app root, the click was *into* the
+        focused widget (or one of its children) and we keep focus.
+        Otherwise we blur. Applies to every focusable widget (Input,
+        ListView, RichLog, etc.) on every screen with no per-screen
+        special-casing.
+
+        The walk is bounded by both the app root and a depth limit
+        so a malformed widget tree cannot wedge the loop.
+        """
+        focused = self.focused
+        if focused is None:
+            return
+        target = getattr(event, "widget", None) or getattr(event, "control", None)
+        depth = 0
+        while target is not None and target is not self and depth < 32:
+            if target is focused:
+                return
+            target = getattr(target, "parent", None)
+            depth += 1
+        self.set_focus(None)
 
     # -------- WS callbacks (called from the websocket thread) --------
     # These names deliberately do NOT start with "on_" because Textual

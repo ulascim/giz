@@ -37,6 +37,20 @@ ContactsScreen ListView > ListItem {
     padding: 0 1;
 }
 
+/* Subtle highlight for unread: a slightly raised background ($boost is
+   Textual's standard "very light tint of the surface" variable). The
+   cursor-highlight rule below has the same specificity but appears
+   later in the cascade, so a row that is BOTH unread AND under the
+   cursor gets the loud accent (correct - cursor wins). */
+ContactsScreen ListView > ListItem.unread {
+    background: $boost;
+}
+ContactsScreen ListView > ListItem.unread .contact-row,
+ContactsScreen ListView > ListItem.unread .contact-name,
+ContactsScreen ListView > ListItem.unread .contact-status {
+    background: $boost;
+}
+
 /* Loud highlight: a solid accent bar across the whole row.
    We have to push the color all the way down to the inner Static
    widgets because they declare 'background: transparent', which
@@ -138,15 +152,20 @@ MyLinkScreen #my-status {
     color: $text-muted;
 }
 
-/* ---------------- AddContactScreen ---------------- */
+/* ---------------- Shared form-screen styling ---------------- */
+/* Single rule for any single-purpose form screen (AddContactScreen,
+   RenameContactScreen, etc.). Keeping the look uniform across screens
+   matters more than per-screen specificity. */
 
-AddContactScreen Label {
+AddContactScreen Label,
+RenameContactScreen Label {
     height: 1;
     padding: 0 1;
     color: $text-muted;
 }
 
-AddContactScreen Input {
+AddContactScreen Input,
+RenameContactScreen Input {
     height: 1;
     background: $surface;
     border: none;
@@ -154,17 +173,16 @@ AddContactScreen Input {
     margin: 0 0 1 0;
 }
 
-AddContactScreen #paste-code {
+AddContactScreen #paste-code,
+AddContactScreen #add-status,
+RenameContactScreen #rename-status {
     height: auto;
     padding: 0 1;
     color: $text-muted;
-    margin: 0 0 1 0;
 }
 
-AddContactScreen #add-status {
-    height: auto;
-    padding: 0 1;
-    color: $text-muted;
+AddContactScreen #paste-code {
+    margin: 0 0 1 0;
 }
 
 /* ---------------- InfoScreen ---------------- */
