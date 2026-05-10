@@ -542,17 +542,31 @@ def enforce_perms(data_dir: Path) -> Optional[str]:
 
     Defense-in-depth recursive sweep across data_dir/real:
         - directories          0700
-        - regular files        0600
+        - regular files        0700 if the owner-execute bit is already
+                               set or the file is a known-executable
+                               Tor helper (tor, lyrebird, obfs4proxy,
+                               snowflake); 0600 otherwise.
         - symlinks             refused (no chmod through them)
 
-    Why the recursive sweep: Briar creates db.key, db.key.bak, db.mv.db
-    and tor/* with mode 0644 by default. The parent dir is 0700 so a
-    co-tenant cannot traverse to read them today, BUT if the parent
-    perms ever loosen (a backup tool, a sync tool, an accidental
-    chmod -R, a recovery rsync that doesn't preserve modes), the
-    inner files become world-readable AND contain enough material
-    (encrypted-key blobs + the encrypted database) to brute-force
-    the password offline. Tighten everything to least privilege.
+    Why preserve owner-execute: Briar bundles a tor binary plus the
+    pluggable-transport helpers (lyrebird / obfs4proxy / snowflake)
+    inside data_dir/real/tor/ and exec()s them at every launch. An
+    earlier giz release force-chmod'd them to 0600, which silently
+    killed the tor plugin (Briar logs 'error=13, Permission denied'
+    exec'ing tor) and every contact stayed 'pending' forever. We
+    keep the recursive sweep for defense-in-depth on the encrypted
+    DB, but never strip owner-execute from a file that legitimately
+    needs it.
+
+    Why the recursive sweep at all: Briar creates db.key, db.key.bak,
+    db.mv.db and tor/* with mode 0644 by default. The parent dir is
+    0700 so a co-tenant cannot traverse to read them today, BUT if
+    the parent perms ever loosen (a backup tool, a sync tool, an
+    accidental chmod -R, a recovery rsync that doesn't preserve
+    modes), the inner files become world-readable AND contain enough
+    material (encrypted-key blobs + the encrypted database) to
+    brute-force the password offline. Tighten everything to least
+    privilege.
 
     Returns None on success, or a human-readable error string if any
     target exists but cannot be brought to the required mode. The
@@ -614,6 +628,13 @@ def enforce_perms(data_dir: Path) -> Optional[str]:
     # traversal (permissions, missing files mid-walk) are recorded but
     # do not abort: the pinned targets above are the security-critical
     # ones; this loop is a hardening best-effort.
+    #
+    # Files Briar bundles under real/tor/ that MUST stay executable for
+    # the tor plugin to start. If we strip +x from any of these, Briar
+    # fails with "error=13, Permission denied" and contacts hang in
+    # 'pending' forever. We self-heal +x on this list even if a prior
+    # bad sweep had already removed it.
+    tor_executables = {"tor", "obfs4proxy", "lyrebird", "snowflake"}
     real_dir = data_dir / "real"
     if real_dir.is_dir() and not real_dir.is_symlink():
         for root, dirs, files in os.walk(real_dir, followlinks=False):
@@ -628,7 +649,23 @@ def enforce_perms(data_dir: Path) -> Optional[str]:
                 try:
                     if p.is_symlink():
                         continue  # never chmod through a symlink
-                    os.chmod(p, 0o600)
+                    # Decide target mode: keep owner-execute if the
+                    # file already has it, or if it's a known Tor
+                    # helper that Briar will exec(). Otherwise tighten
+                    # to 0600.
+                    target = 0o600
+                    if name in tor_executables:
+                        target = 0o700
+                    else:
+                        try:
+                            cur = stat.S_IMODE(
+                                os.stat(p, follow_symlinks=False).st_mode
+                            )
+                            if cur & 0o100:
+                                target = 0o700
+                        except OSError:
+                            pass
+                    os.chmod(p, target)
                 except OSError:
                     # Common: file vanished mid-walk (Tor / Briar
                     # rotating state). Not a security failure; ignore.

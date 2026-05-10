@@ -11,4 +11,4 @@ All real cryptography and networking lives in Briar; giz adds:
 See SECURITY.md in the repo root for the full threat model.
 """
 
-__version__ = "0.2.4"
+__version__ = "0.2.5"

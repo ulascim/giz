@@ -273,9 +273,14 @@ def _check_machine_lock_uid_based() -> Tuple[bool, str]:
 
 def _check_enforce_perms_recursive() -> Tuple[bool, str]:
     """Spawn a subprocess with a synthetic data dir whose 'real/' is
-    seeded with mode-0644 inner files, run enforce_perms, confirm the
-    inner files are now 0600 and inner dirs are 0700. Subprocess
-    isolation keeps the user's real ~/.giz untouched.
+    seeded with mode-0644 inner files (plus a stub 'tor' executable),
+    run enforce_perms, and confirm:
+        - non-executable files are tightened to 0600
+        - inner directories are tightened to 0700
+        - the bundled tor binary keeps owner-execute (0700), so the
+          v0.2.1-era regression that stripped +x and broke contact
+          handshakes cannot return.
+    Subprocess isolation keeps the user's real ~/.giz untouched.
     """
     if platform.system() == "Windows":
         return True, "skipped (POSIX modes don't apply)"
@@ -294,17 +299,26 @@ def _check_enforce_perms_recursive() -> Tuple[bool, str]:
                 f2 = d / "real" / "tor" / "torrc"
                 f2.write_bytes(b"y")
                 os.chmod(f2, 0o644)
+                fexe = d / "real" / "tor" / "tor"
+                fexe.write_bytes(b"#!/bin/sh\\n")
+                os.chmod(fexe, 0o600)  # simulate the v0.2.1 regression
                 err = hardening.enforce_perms(d)
                 if err:
                     print("ERR", err)
                 else:
                     m1 = stat.S_IMODE(os.stat(f1).st_mode)
                     m2 = stat.S_IMODE(os.stat(f2).st_mode)
+                    me = stat.S_IMODE(os.stat(fexe).st_mode)
                     md = stat.S_IMODE(os.stat(d / "real" / "tor").st_mode)
-                    if m1 == 0o600 and m2 == 0o600 and md == 0o700:
+                    if (
+                        m1 == 0o600
+                        and m2 == 0o600
+                        and me == 0o700
+                        and md == 0o700
+                    ):
                         print("RECURSED")
                     else:
-                        print("WRONG", oct(m1), oct(m2), oct(md))
+                        print("WRONG", oct(m1), oct(m2), oct(me), oct(md))
         """),
         "RECURSED",
     )
