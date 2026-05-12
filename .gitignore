@@ -49,11 +49,23 @@ dev-requirements.txt
 pytest.ini
 ruff.toml
 
-# Scanner raw outputs from the v0.2.3 expansion stay local. Findings
-# summaries and SBOMs that are part of the public proof remain checked
-# in (security-scans/2026-05-09/SUMMARY.md and *.json/*.spdx already
-# committed in v0.2.2); these large per-tool dumps are generated
-# fresh on each run and are reproducible from the documented commands.
+# Scanner raw outputs stay local. Only the human-readable SUMMARY.md
+# is checked into the public tree. Three reasons this is a per-pattern
+# allowlist rather than a single "security-scans/**" block:
+#   1. Several tools (Safety, Grype, Syft, Trivy in some modes) embed
+#      absolute filesystem paths from the maintainer's machine into
+#      their output. Those paths are personal information leakage
+#      and were the bug that triggered this rule in v0.2.6.
+#   2. SBOM .json / .spdx files are large, opaque, and noisy in
+#      git diffs; reviewers cannot eyeball them anyway.
+#   3. The SUMMARY.md is the only artifact that's actually useful to
+#      a casual auditor; it points at the exact tool versions and
+#      flags so anyone can reproduce.
+security-scans/**/*.json
+security-scans/**/*.sarif
+security-scans/**/*.spdx
+security-scans/**/*.cyclonedx
+security-scans/**/*.txt
 security-scans/**/codeql.sarif
 security-scans/**/trivy.json
 security-scans/**/checkov.json

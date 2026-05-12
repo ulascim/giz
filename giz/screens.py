@@ -21,7 +21,7 @@ import re
 import shutil as _shutil
 import subprocess
 import time
-from typing import List, Optional, TYPE_CHECKING
+from typing import Any, List, Optional, Tuple, TYPE_CHECKING
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -105,6 +105,29 @@ class ContactsScreen(Screen):
 
         items: List[tuple] = [("contact", c) for c in contacts]
         items.extend(("pending", p) for p in pending)
+
+        # Try to preserve the current cursor across the rebuild so a
+        # message arriving in the background does not yank the user's
+        # selection back to the top mid-scroll. We key on contact id
+        # for confirmed contacts (stable across reorders by connected
+        # state) and on the pendingContactId field for pending rows.
+        prior_key: Optional[Tuple[str, Any]] = None
+        try:
+            old_view = self.query_one(ListView)
+            old_idx = old_view.index
+            if (
+                old_idx is not None
+                and 0 <= old_idx < len(self._items)
+            ):
+                kind, payload = self._items[old_idx]
+                if kind == "contact":
+                    prior_key = ("contact", payload.id)
+                else:
+                    pc = payload.get("pendingContact", {}) if isinstance(payload, dict) else {}
+                    prior_key = ("pending", pc.get("pendingContactId"))
+        except Exception:
+            prior_key = None
+
         self._items = items
 
         list_view = self.query_one(ListView)
@@ -117,13 +140,19 @@ class ContactsScreen(Screen):
             return
         empty.display = False
         list_view.display = True
-        for kind, payload in items:
+        new_idx = 0
+        for i, (kind, payload) in enumerate(items):
             if kind == "contact":
                 unread = self.app.unread.get(payload.id, 0)
                 list_view.append(_contact_item(payload, unread))
+                if prior_key == ("contact", payload.id):
+                    new_idx = i
             else:
                 list_view.append(_pending_item(payload))
-        list_view.index = 0
+                pc = payload.get("pendingContact", {}) if isinstance(payload, dict) else {}
+                if prior_key == ("pending", pc.get("pendingContactId")):
+                    new_idx = i
+        list_view.index = new_idx
 
     def action_add_contact(self) -> None:
         self.app.push_screen(AddContactScreen())
@@ -251,8 +280,17 @@ def _contact_item(c: Contact, unread: int) -> ListItem:
     else:
         dot = "[dim]○[/]"
         status = "offline"
+    # Visible unread cue, terminal-agnostic. A CSS background change
+    # alone is invisible on many themes because Textual's $boost can
+    # be perceptually identical to $surface. A bright yellow dot in
+    # the row text always renders, on every terminal, regardless of
+    # color scheme. The CSS .unread rule still applies in addition
+    # for themes where the background tint is visible.
+    name_text = (
+        f"[bright_yellow]●[/] {c.display}" if unread else c.display
+    )
     row = Horizontal(
-        Label(c.display, classes="contact-name"),
+        Label(name_text, classes="contact-name"),
         Label(f"{dot} {status}", classes="contact-status"),
         classes="contact-row",
     )

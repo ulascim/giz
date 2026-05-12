@@ -157,7 +157,19 @@ class GizApp(App):
             if len(self.event_log) > 200:
                 self.event_log = self.event_log[-200:]
 
-        if "PrivateMessageReceived" in name or "PrivateMessageAdded" in name:
+        # briar-headless has shipped at least three different names for
+        # "new inbound private message" across 0.5.x / 0.6.x / 1.x:
+        #   PrivateMessageReceivedEvent
+        #   PrivateMessageAddedEvent
+        #   ConversationMessageReceivedEvent   (current branch)
+        # Match all of them so the unread counter never silently
+        # misses an arrival just because upstream renamed an event.
+        if (
+            "PrivateMessageReceived" in name
+            or "PrivateMessageAdded" in name
+            or "ConversationMessageReceived" in name
+            or "ConversationMessageAdded" in name
+        ):
             self._on_private_message(data)
         elif "MessagesAck" in name or "MessagesSent" in name:
             # Outgoing message was delivered; refresh the visible chat

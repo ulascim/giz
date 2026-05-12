@@ -119,9 +119,6 @@ def main(argv: Optional[list] = None) -> int:
     if perms_error:
         sys.stderr.write(f"refused to start: {perms_error}\n")
         return 16
-    swap_warning = hardening.detect_unencrypted_swap()
-    if swap_warning:
-        sys.stderr.write(f"warning: {swap_warning}\n")
 
     if args.setup:
         return _setup(data_dir, _resolve_jar(args.jar), args.port)

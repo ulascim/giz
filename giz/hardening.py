@@ -831,26 +831,10 @@ def _parse_ss_binds(stdout: str, port: int, pid: int) -> list[str]:
     return binds
 
 
-def detect_unencrypted_swap() -> Optional[str]:
-    """Return a human-readable warning string if swap appears unencrypted.
-
-    Best-effort, OS-specific. Returns None if swap is encrypted or
-    detection failed.
-    """
-    system = platform.system()
-    try:
-        if system == "Linux":
-            swaps = Path("/proc/swaps")
-            if swaps.exists() and swaps.read_text().strip().count("\n") >= 1:
-                return (
-                    "Swap is enabled. If your root partition is not "
-                    "LUKS-encrypted, password fragments may reach disk. "
-                    "Use full-disk encryption."
-                )
-        elif system == "Darwin":
-            return None
-        elif system == "Windows":
-            return None
-    except Exception:
-        return None
-    return None
+# NOTE: full-disk-encryption detection is intentionally not
+# implemented in giz. A proper probe would require platform-
+# specific subprocess execs at startup (fdesetup on Darwin,
+# manage-bde / Get-BitLockerVolume on Windows, cryptsetup on
+# Linux) which we have chosen not to add. If a real probe is
+# ever introduced, it goes here with a matching SECURITY.md
+# update -- and only then.

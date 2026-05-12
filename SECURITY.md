@@ -105,8 +105,9 @@ them. On modern SSDs the controller may write to a different physical
 block, so the original ciphertext blocks may remain readable until the
 firmware GCs them. The real defense against forensic recovery is
 full-disk encryption (FileVault on macOS, BitLocker on Windows, LUKS on
-Linux). The installer warns loudly if FDE is disabled but does not
-refuse to install.
+Linux). `giz` does not probe whether FDE is enabled and does not
+print a warning if it is off. Enable FDE yourself before installing
+`giz` on a laptop that can leave your sight.
 
 **Process-internal exfiltration is constrained, not impossible.** The
 giz wrapper installs a runtime guard that refuses any non-loopback
@@ -326,7 +327,7 @@ DNS guard, loopback narrowing, duress decoy byte-equality,
 The output looks like:
 
 ```text
-giz v0.2.3  (python 3.12.4 on darwin arm64)
+giz v0.2.6  (python 3.12.4 on darwin arm64)
   argon2 binding ........................ ok
   hashes file 0o600 (synthetic) ......... ok
   socket guard refuses 8.8.8.8 .......... ok
@@ -346,10 +347,17 @@ should you.
 
 ## Static and supply-chain analysis
 
-`giz` is continuously scanned by an industry-standard lineup of
-static analyzers and dependency CVE scanners. Every push, pull
-request, and weekly cron tick runs the full pipeline; SARIF outputs
-are uploaded to the GitHub Security tab where supported.
+`giz` is scanned by an industry-standard lineup of static analyzers
+and dependency CVE scanners. The scans run **locally on the
+maintainer's machine** before every release; the per-tool runner
+scripts and GitHub Actions workflows live outside the public tree
+and are not part of the released source. This is a deliberate
+trade-off: no public CI means no public SARIF dashboard, but it
+also means an attacker who compromises a CI service does not get
+to inject artifacts into the release. The release commit always
+includes an updated `security-scans/<date>/SUMMARY.md` so an
+auditor can see the results without needing to run the full
+toolchain themselves.
 
 **Scanners in the pipeline:**
 
@@ -371,7 +379,16 @@ are uploaded to the GitHub Security tab where supported.
 | [Grype](https://github.com/anchore/grype) (Anchore) | SBOM vuln-match | Matches the syft SBOM against known vulnerability DBs |
 | [osv-scanner](https://google.github.io/osv-scanner/) (Google) | OSV.dev DB scanner | Vulns from OSV.dev across PyPI/Go/npm/cargo — third independent dep scanner |
 
-### Most recent local scan (2026-05-09, v0.2.3)
+### Most recent local scan (2026-05-09, v0.2.3 baseline, carried forward through v0.2.6)
+
+The full 15-scanner pipeline last ran clean against the v0.2.3
+codebase on 2026-05-09. v0.2.4 (UX polish), v0.2.5 (tor +x
+regression fix), and v0.2.6 (this release: unread visibility,
+honesty-pass on SECURITY.md, scan-artifact privacy) touched only
+the TUI, the recursive-perms sweep, and documentation — no
+production code paths under static-analysis scrutiny were altered,
+so the v0.2.3 results carry forward verbatim. A fresh full sweep
+will run before v0.3.0.
 
 | Scanner | Real findings | False positives / advisory | Action |
 |---|---|---|---|
@@ -401,10 +418,15 @@ of the library — `giz` never uses `.netrc` and never calls
 `extract_zipped_paths()` — but were patched anyway in v0.2.2, in line
 with the project's lockfile-first supply-chain stance.
 
-Raw scan artifacts (JSON / SARIF for every scanner, SBOM in CycloneDX
-and SPDX format) live in `security-scans/2026-05-09/` and are checked
-into the repository so any reader can independently re-run and diff
-against their own scan.
+The human-readable summary lives in
+`security-scans/2026-05-09/SUMMARY.md` and is the only scan
+artifact checked into the public tree. Raw scanner JSON / SARIF /
+SBOM outputs are kept out of the repo because they are noisy,
+machine-generated, and not useful to review in a code-review
+context. Anyone who wants the raw artifacts can regenerate them
+by running the commands in the reproducer below; the SUMMARY
+records the exact versions of every tool used so the results are
+deterministic across machines.
 
 ### Reproducing locally
 

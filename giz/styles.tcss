@@ -37,18 +37,26 @@ ContactsScreen ListView > ListItem {
     padding: 0 1;
 }
 
-/* Subtle highlight for unread: a slightly raised background ($boost is
-   Textual's standard "very light tint of the surface" variable). The
-   cursor-highlight rule below has the same specificity but appears
-   later in the cascade, so a row that is BOTH unread AND under the
-   cursor gets the loud accent (correct - cursor wins). */
+/* Unread row indicator. Two-channel cue so the user notices on any
+   terminal theme:
+     1. A bright-yellow dot is prepended to the contact name in
+        screens._contact_item (always visible, even on monochrome
+        or low-contrast themes).
+     2. A clearly distinct background tint here.
+
+   The previous attempt used $boost, which is perceptually identical
+   to $surface on most Textual themes; users reported the unread
+   row looked exactly like a normal row. We use $warning at low
+   opacity so the row gets a faint warm wash that reads as "new"
+   without screaming. The cursor-highlight rule still has higher
+   priority because it appears later in the cascade. */
 ContactsScreen ListView > ListItem.unread {
-    background: $boost;
+    background: $warning 25%;
 }
 ContactsScreen ListView > ListItem.unread .contact-row,
 ContactsScreen ListView > ListItem.unread .contact-name,
 ContactsScreen ListView > ListItem.unread .contact-status {
-    background: $boost;
+    background: $warning 25%;
 }
 
 /* Loud highlight: a solid accent bar across the whole row.
